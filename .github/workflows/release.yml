@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   # 手动触发即干跑：完整编译、签名、公证，产物只留在 workflow 里，不建 GitHub Release
   workflow_dispatch:
 
@@ -43,7 +43,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Setup pnpm
         env:
@@ -81,7 +81,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "20"
 
       # rust-toolchain.toml 是编译器版本的唯一来源：直接装它，免得先装 stable 再被 rustup 换掉
       - name: Read pinned Rust toolchain
@@ -160,12 +160,6 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
-      - name: Prepare Tauri signing key
-        uses: ./.github/actions/prepare-tauri-signing-key
-        with:
-          private-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          password: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
       - name: Build Tauri App (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -200,7 +194,7 @@ jobs:
           $targetRoot = if ($isArm64) { 'src-tauri/target/aarch64-pc-windows-msvc/release' } else { 'src-tauri/target/release' }
           $assetSuffix = if ($isArm64) { '-arm64' } else { '' }
 
-          # 仅打包 MSI 安装器 + .sig（用于 Updater）
+          # 仅打包 MSI 安装器
           $msi = Get-ChildItem -Path (Join-Path $targetRoot 'bundle/msi') -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($null -eq $msi) {
             # 兜底：全局搜索 .msi
@@ -224,13 +218,6 @@ jobs:
             $dest = "CC-Switch-$VERSION-Windows$assetSuffix.msi"
             Copy-Item $msi.FullName (Join-Path release-assets $dest)
             Write-Host "Installer copied: $dest"
-            $sigPath = "$($msi.FullName).sig"
-            if (Test-Path $sigPath) {
-              Copy-Item $sigPath (Join-Path release-assets ("$dest.sig"))
-              Write-Host "Signature copied: $dest.sig"
-            } else {
-              throw "Signature not found for $($msi.Name)"
-            }
           } else {
             throw "No Windows MSI installer found ($env:WINDOWS_RELEASE_ARCH)"
           }
@@ -282,60 +269,38 @@ jobs:
           # e.g., v3.5.0；手动干跑时是分支名，斜杠会被当成目录，换成 -
           VERSION="${GITHUB_REF_NAME//\//-}"
           ARCH="${{ matrix.arch || 'x86_64' }}"
-          # Updater artifact: AppImage（含对应 .sig）
+          # AppImage 安装包
           APPIMAGE=$(find src-tauri/target/release/bundle -name "*.AppImage" | head -1 || true)
           if [ -z "$APPIMAGE" ]; then
             echo "❌ No AppImage found under target/release/bundle" >&2
             exit 1
           fi
-          if [ ! -f "$APPIMAGE.sig" ]; then
-            echo "❌ Updater signature not found: $APPIMAGE.sig" >&2
-            exit 1
-          fi
           NEW_APPIMAGE="CC-Switch-${VERSION}-Linux-${ARCH}.AppImage"
           cp "$APPIMAGE" "release-assets/$NEW_APPIMAGE"
-          cp "$APPIMAGE.sig" "release-assets/$NEW_APPIMAGE.sig"
           echo "AppImage copied: $NEW_APPIMAGE"
-          # 额外上传 .deb（用于 Debian/Ubuntu 自动更新）
+          # 额外上传 .deb（用于 Debian/Ubuntu 手动安装）
           DEB=$(find src-tauri/target/release/bundle -name "*.deb" | head -1 || true)
           if [ -z "$DEB" ]; then
             echo "❌ No .deb found under target/release/bundle" >&2
             exit 1
           fi
-          if [ ! -f "$DEB.sig" ]; then
-            echo "❌ Updater signature not found: $DEB.sig" >&2
-            exit 1
-          fi
           NEW_DEB="CC-Switch-${VERSION}-Linux-${ARCH}.deb"
           cp "$DEB" "release-assets/$NEW_DEB"
-          cp "$DEB.sig" "release-assets/$NEW_DEB.sig"
           echo "Deb package copied: $NEW_DEB"
-          # 额外上传 .rpm（用于 Fedora/RHEL/openSUSE 等自动更新）
+          # 额外上传 .rpm（用于 Fedora/RHEL/openSUSE 等手动安装）
           RPM=$(find src-tauri/target/release/bundle -name "*.rpm" | head -1 || true)
           if [ -z "$RPM" ]; then
             echo "❌ No .rpm found under target/release/bundle" >&2
             exit 1
           fi
-          if [ ! -f "$RPM.sig" ]; then
-            echo "❌ Updater signature not found: $RPM.sig" >&2
-            exit 1
-          fi
           NEW_RPM="CC-Switch-${VERSION}-Linux-${ARCH}.rpm"
           cp "$RPM" "release-assets/$NEW_RPM"
-          cp "$RPM.sig" "release-assets/$NEW_RPM.sig"
           echo "RPM package copied: $NEW_RPM"
 
       - name: List prepared assets
         shell: bash
         run: |
           ls -la release-assets || true
-
-      - name: Collect Signatures
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Collected signatures (if any alongside artifacts):"
-          ls -la release-assets/*.sig || echo "No signatures found"
 
       - name: Upload release artifacts to workflow
         uses: actions/upload-artifact@v7
@@ -369,7 +334,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "20"
 
       # rust-toolchain.toml 是编译器版本的唯一来源：直接装它，免得先装 stable 再被 rustup 换掉
       - name: Read pinned Rust toolchain
@@ -426,7 +391,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "20"
 
       # rust-toolchain.toml 是编译器版本的唯一来源：直接装它，免得先装 stable 再被 rustup 换掉
       - name: Read pinned Rust toolchain
@@ -453,12 +418,6 @@ jobs:
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
-
-      - name: Prepare Tauri signing key
-        uses: ./.github/actions/prepare-tauri-signing-key
-        with:
-          private-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          password: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Import Apple signing certificate
         shell: bash
@@ -521,7 +480,7 @@ jobs:
           chmod +x "$out/cc-switch"
           lipo -info "$out/cc-switch"
 
-      # 只打 .app（连同 updater 的 .app.tar.gz 和 .sig）：发布用的 DMG 在下面由 create-dmg 制作，
+      # 只打 .app（连同 .app.tar.gz 归档）：发布用的 DMG 在下面由 create-dmg 制作，
       # Tauri 自己的 DMG 从来不上传。失败只重试这一步，不会重编。
       - name: Bundle, sign and notarize (macOS)
         shell: bash
@@ -582,7 +541,7 @@ jobs:
           done
 
           if [ -z "$TAR_GZ" ]; then
-            echo "❌ No macOS .tar.gz updater artifact found" >&2
+            echo "❌ No macOS .tar.gz archive found" >&2
             exit 1
           fi
           if [ -z "$APP_PATH" ]; then
@@ -608,15 +567,10 @@ jobs:
           stapler_retry staple "$APP_PATH"
           echo "✅ .app stapled"
 
-          # 1) Collect .tar.gz (updater artifact)
+          # 1) Collect .tar.gz (macOS archive)
           NEW_TAR_GZ="CC-Switch-${VERSION}-macOS.tar.gz"
           cp "$TAR_GZ" "release-assets/$NEW_TAR_GZ"
-          if [ ! -f "$TAR_GZ.sig" ]; then
-            echo "❌ Updater signature not found: $TAR_GZ.sig" >&2
-            exit 1
-          fi
-          cp "$TAR_GZ.sig" "release-assets/$NEW_TAR_GZ.sig"
-          echo "macOS updater artifact copied: $NEW_TAR_GZ"
+          echo "macOS archive copied: $NEW_TAR_GZ"
 
           # 2) Collect .app as zip
           NEW_ZIP="CC-Switch-${VERSION}-macOS.zip"
@@ -819,132 +773,6 @@ jobs:
           set -euo pipefail
           ls -la release-assets
 
-      # 签名就在刚下载的产物里：latest.json 随安装包一起上传。缺平台时在建 release 之前就失败，
-      # 不会留下一个缺 latest.json 的半成品 release。
-      - name: Generate latest.json
-        env:
-          REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          VERSION="${TAG#v}"
-          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          base_url="https://github.com/$REPO/releases/download/$TAG"
-          # 初始化空平台映射
-          mac_url=""; mac_sig=""
-          win_x64_url=""; win_x64_sig=""
-          win_arm64_url=""; win_arm64_sig=""
-          linux_x64_url=""; linux_x64_sig=""
-          linux_arm64_url=""; linux_arm64_sig=""
-          linux_x64_deb_url=""; linux_x64_deb_sig=""
-          linux_arm64_deb_url=""; linux_arm64_deb_sig=""
-          linux_x64_rpm_url=""; linux_x64_rpm_sig=""
-          linux_arm64_rpm_url=""; linux_arm64_rpm_sig=""
-          shopt -s nullglob
-          for sig in release-assets/*.sig; do
-            base=${sig%.sig}
-            fname=$(basename "$base")
-            url="$base_url/$fname"
-            sig_content=$(cat "$sig")
-            case "$fname" in
-              *.tar.gz)
-                # 视为 macOS updater artifact
-                mac_url="$url"; mac_sig="$sig_content";;
-              *-Windows-arm64.msi)
-                win_arm64_url="$url"; win_arm64_sig="$sig_content";;
-              *-Windows.msi)
-                win_x64_url="$url"; win_x64_sig="$sig_content";;
-              *-Linux-arm64.AppImage|*-Linux-arm64.appimage)
-                linux_arm64_url="$url"; linux_arm64_sig="$sig_content";;
-              *-Linux-x86_64.AppImage|*-Linux-x86_64.appimage)
-                linux_x64_url="$url"; linux_x64_sig="$sig_content";;
-              *-Linux-arm64.deb)
-                linux_arm64_deb_url="$url"; linux_arm64_deb_sig="$sig_content";;
-              *-Linux-x86_64.deb)
-                linux_x64_deb_url="$url"; linux_x64_deb_sig="$sig_content";;
-              *-Linux-arm64.rpm)
-                linux_arm64_rpm_url="$url"; linux_arm64_rpm_sig="$sig_content";;
-              *-Linux-x86_64.rpm)
-                linux_x64_rpm_url="$url"; linux_x64_rpm_sig="$sig_content";;
-            esac
-          done
-          # 缺任一平台都不能发：缺的那批用户会静默收不到更新
-          missing=""
-          [ -n "$mac_sig" ] || missing="$missing macOS"
-          [ -n "$win_x64_sig" ] || missing="$missing windows-x86_64"
-          [ -n "$win_arm64_sig" ] || missing="$missing windows-aarch64"
-          [ -n "$linux_x64_sig" ] || missing="$missing linux-x86_64"
-          [ -n "$linux_arm64_sig" ] || missing="$missing linux-aarch64"
-          [ -n "$linux_x64_deb_sig" ] || missing="$missing linux-x86_64-deb"
-          [ -n "$linux_arm64_deb_sig" ] || missing="$missing linux-aarch64-deb"
-          [ -n "$linux_x64_rpm_sig" ] || missing="$missing linux-x86_64-rpm"
-          [ -n "$linux_arm64_rpm_sig" ] || missing="$missing linux-aarch64-rpm"
-          if [ -n "$missing" ]; then
-            echo "❌ Missing updater signatures for:$missing" >&2
-            exit 1
-          fi
-          # 构造 JSON
-          tmp_json=$(mktemp)
-          {
-            echo '{'
-            echo "  \"version\": \"$VERSION\",";
-            echo "  \"notes\": \"Release $TAG\",";
-            echo "  \"pub_date\": \"$PUB_DATE\",";
-            echo '  "platforms": {'
-            first=1
-            if [ -n "$mac_url" ] && [ -n "$mac_sig" ]; then
-              # 为兼容 arm64 / x64，重复写入两个键，指向同一 universal 包
-              for key in darwin-aarch64 darwin-x86_64; do
-                [ $first -eq 0 ] && echo ','
-                echo "    \"$key\": {\"signature\": \"$mac_sig\", \"url\": \"$mac_url\"}"
-                first=0
-              done
-            fi
-            if [ -n "$win_x64_url" ] && [ -n "$win_x64_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"windows-x86_64\": {\"signature\": \"$win_x64_sig\", \"url\": \"$win_x64_url\"}"
-              first=0
-            fi
-            if [ -n "$win_arm64_url" ] && [ -n "$win_arm64_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"windows-aarch64\": {\"signature\": \"$win_arm64_sig\", \"url\": \"$win_arm64_url\"}"
-              first=0
-            fi
-            if [ -n "$linux_x64_url" ] && [ -n "$linux_x64_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"linux-x86_64\": {\"signature\": \"$linux_x64_sig\", \"url\": \"$linux_x64_url\"}"
-              first=0
-            fi
-            if [ -n "$linux_arm64_url" ] && [ -n "$linux_arm64_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"linux-aarch64\": {\"signature\": \"$linux_arm64_sig\", \"url\": \"$linux_arm64_url\"}"
-              first=0
-            fi
-            if [ -n "$linux_x64_deb_url" ] && [ -n "$linux_x64_deb_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"linux-x86_64-deb\": {\"signature\": \"$linux_x64_deb_sig\", \"url\": \"$linux_x64_deb_url\"}"
-              first=0
-            fi
-            if [ -n "$linux_arm64_deb_url" ] && [ -n "$linux_arm64_deb_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"linux-aarch64-deb\": {\"signature\": \"$linux_arm64_deb_sig\", \"url\": \"$linux_arm64_deb_url\"}"
-              first=0
-            fi
-            if [ -n "$linux_x64_rpm_url" ] && [ -n "$linux_x64_rpm_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"linux-x86_64-rpm\": {\"signature\": \"$linux_x64_rpm_sig\", \"url\": \"$linux_x64_rpm_url\"}"
-              first=0
-            fi
-            if [ -n "$linux_arm64_rpm_url" ] && [ -n "$linux_arm64_rpm_sig" ]; then
-              [ $first -eq 0 ] && echo ','
-              echo "    \"linux-aarch64-rpm\": {\"signature\": \"$linux_arm64_rpm_sig\", \"url\": \"$linux_arm64_rpm_url\"}"
-              first=0
-            fi
-            echo '  }'
-            echo '}'
-          } > "$tmp_json"
-          echo "Generated latest.json:" && cat "$tmp_json"
-          mv "$tmp_json" release-assets/latest.json
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v3
         with:
@@ -965,8 +793,6 @@ jobs:
             - **Windows (ARM64)**: `CC-Switch-${{ github.ref_name }}-Windows-arm64.msi`（安装版）或 `CC-Switch-${{ github.ref_name }}-Windows-arm64-Portable.zip`（绿色版）
             - **Linux (x86_64)**: `CC-Switch-${{ github.ref_name }}-Linux-x86_64.AppImage` / `.deb` / `.rpm`
             - **Linux (ARM64)**: `CC-Switch-${{ github.ref_name }}-Linux-arm64.AppImage` / `.deb` / `.rpm`
-
-            > `.tar.gz` 为 Tauri updater 自动更新专用，无需手动下载。
 
             ---
             macOS 版本已通过 Apple 代码签名和公证，可直接安装使用。

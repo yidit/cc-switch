@@ -71,13 +71,9 @@ cargo test some_test_name     # Run tests matching a name
 
 ### Local Build
 
-As its final step, `pnpm build` signs the auto-update bundles, which requires the release private key `TAURI_SIGNING_PRIVATE_KEY`. If you don't have the key locally, you can turn off updater bundle generation:
+`pnpm build` produces the platform installer bundles. In-app updates have been removed, so no updater signing key is required.
 
-```bash
-pnpm tauri build -c '{"bundle":{"createUpdaterArtifacts":false}}'
-```
-
-For a debug build, append `--debug` to the command above. This single-quote form works on macOS and Linux; on Windows, save `{"bundle":{"createUpdaterArtifacts":false}}` to a JSON file and pass it with `-c <file path>`.
+For a debug build, append `--debug`.
 
 ## Testing
 
@@ -330,13 +326,9 @@ cargo test some_test_name     # 按名称运行部分测试
 
 ### 本地打包
 
-`pnpm build` 最后会为自动更新包签名，这一步需要发布用的私钥 `TAURI_SIGNING_PRIVATE_KEY`。本地没有私钥时，可以关闭更新包生成：
+`pnpm build` 会生成各平台的安装包。应用内更新已移除，因此不需要任何更新签名密钥。
 
-```bash
-pnpm tauri build -c '{"bundle":{"createUpdaterArtifacts":false}}'
-```
-
-需要调试版本时，在上面的命令后加 `--debug`。这种单引号写法适用于 macOS 和 Linux；在 Windows 上，可以把 `{"bundle":{"createUpdaterArtifacts":false}}` 存成一个 JSON 文件，再用 `-c <文件路径>` 传入。
+需要调试版本时，在上面的命令后加 `--debug`。
 
 ## 测试
 

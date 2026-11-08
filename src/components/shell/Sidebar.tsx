@@ -27,7 +27,6 @@ import { orderAppIds } from "@/config/appConfig";
 import type { GlobalPage, SettingsSection, View } from "@/lib/navigation";
 import { isAppPage } from "@/lib/navigation";
 import { SkillsIcon } from "@/components/BrandIcons";
-import { useUpdate } from "@/contexts/UpdateContext";
 import { sidebarWidth, useSidebarCollapsed } from "@/hooks/useSidebarCollapsed";
 import { useMoneyFormat } from "@/hooks/useMoneyFormat";
 import { useSettingsQuery } from "@/lib/query";
@@ -219,7 +218,6 @@ function MainDirectory({
   const { t, i18n } = useTranslation();
   const { moneyShort } = useMoneyFormat();
   const { data: settings } = useSettingsQuery();
-  const { hasUpdate } = useUpdate();
   const {
     appStatus,
     todayCost,
@@ -378,9 +376,6 @@ function MainDirectory({
           selected={false}
           icon={Settings}
           label={t("nav.settings")}
-          title={hasUpdate ? t("nav.settingsHasUpdate") : t("nav.settings")}
-          dot={hasUpdate}
-          dotTone="success"
           onClick={() => onSelectPage("settings")}
         />
       </div>
@@ -709,7 +704,6 @@ function SettingsDirectory({
   onExitSettings,
 }: DirectoryProps) {
   const { t } = useTranslation();
-  const { hasUpdate } = useUpdate();
   const { data: version } = useQuery({
     queryKey: ["app-version"],
     queryFn: () => getVersion(),
@@ -753,14 +747,6 @@ function SettingsDirectory({
             selected={settingsSection === section}
             icon={icon}
             label={t(`settings.sections.${section}`)}
-            dot={section === "about" && hasUpdate}
-            dotTone="success"
-            endDot
-            title={
-              section === "about" && hasUpdate
-                ? t("nav.settingsHasUpdate")
-                : undefined
-            }
             onClick={() => onSelectSettingsSection(section)}
           />
         ))}

@@ -1,20 +1,13 @@
 # Mirror release assets to Cloudflare R2 so ccswitch.io/download can serve
-# them directly (dl.ccswitch.io), and mirror the Tauri updater manifest and
-# artifacts so in-app updates avoid GitHub too (the updater verifies minisign
-# signatures client-side, so the mirror is untrusted).
+# them directly (dl.ccswitch.io).
 #
 # Triggered on release promotion (`released` fires when a prerelease is
 # flipped to a full release, or a release is published as stable directly) —
-# NOT on tag push. This keeps the R2 root manifests behind the same gate as
-# GitHub's /releases/latest/: while a release sits as prerelease, neither the
-# download page nor the updater sees it. Additionally, a run only touches the
-# root manifests (and prunes old versions) when its tag IS releases/latest —
+# NOT on tag push. This keeps the R2 root manifest behind the same gate as
+# GitHub's /releases/latest/: while a release sits as prerelease, the
+# download page does not see it. Additionally, a run only touches the root
+# manifest (and prunes old versions) when its tag IS releases/latest —
 # manual backfills of older tags restore versioned files only.
-#
-# Caveat (by design of tauri-plugin-updater): the updater stops at the first
-# endpoint whose response parses, so a stale-but-valid R2 manifest would mask
-# newer GitHub releases. That is why this sync hard-fails on the official
-# repo when the R2 secrets are missing, instead of silently skipping.
 #
 # Required secrets: R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
 name: Sync release to R2
@@ -26,14 +19,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to sync (e.g. v3.18.0)'
+        description: "Release tag to sync (e.g. v3.18.0)"
         required: true
         type: string
 
 permissions:
   contents: read
 
-# latest.json / manifest.json are last-writer-wins — serialize runs and keep
+# manifest.json is last-writer-wins — serialize runs and keep
 # every trigger queued instead of the default replace-the-pending behavior.
 concurrency:
   group: sync-r2
@@ -69,9 +62,8 @@ jobs:
           if [ -n "$R2_ACCOUNT_ID" ] && [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_REPOSITORY" = "farion1231/cc-switch" ]; then
-            # A silently stale mirror strands updater users on old versions
-            # (the R2 endpoint wins as long as its manifest parses), so the
-            # official repo must never skip this sync.
+            # A silently stale mirror leaves the download page pointing at old
+            # versions, so the official repo must never skip this sync.
             echo "::error::R2 secrets (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY) are missing on the official repo; refusing to skip the mirror sync."
             exit 1
           else
@@ -143,20 +135,11 @@ jobs:
           pub_date=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq .publishedAt)
           node scripts/generate-download-manifest.mjs r2-assets "$TAG" "$R2_PUBLIC_BASE_URL" manifest.json "$pub_date"
 
-      - name: Rewrite updater manifest for R2
-        if: steps.r2.outputs.configured == 'true' && steps.latest.outputs.is_latest == 'true'
-        run: |
-          set -euo pipefail
-          node scripts/rewrite-updater-manifest.mjs r2-assets/latest.json "$TAG" "$R2_PUBLIC_BASE_URL" latest-r2.json
-
       - name: Upload versioned assets to R2
         if: steps.r2.outputs.configured == 'true'
         run: |
           set -euo pipefail
           # Versioned asset paths never change — cache hard at the edge.
-          # .tar.gz is the macOS updater payload; .sig files are not needed
-          # (signatures are embedded in latest.json) and latest.json goes to
-          # the bucket root with a short TTL instead.
           aws s3 cp r2-assets "s3://$R2_BUCKET/$TAG/" \
             --recursive \
             --exclude "*.sig" --exclude "latest.json" \
@@ -192,14 +175,10 @@ jobs:
             echo "::warning::$TAG stopped being the latest stable release mid-run ($latest is); leaving root manifests untouched."
             exit 0
           fi
-          # Both manifests are replaced on every release — keep edge cache
-          # short. Uploaded after the assets they reference so an aborted run
-          # never leaves them pointing at missing files.
+          # The manifest is replaced on every release — keep edge cache
+          # short. Uploaded after the assets it references so an aborted run
+          # never leaves it pointing at missing files.
           aws s3 cp manifest.json "s3://$R2_BUCKET/manifest.json" \
-            --content-type "application/json" \
-            --cache-control "public, max-age=300" \
-            --endpoint-url "$R2_ENDPOINT"
-          aws s3 cp latest-r2.json "s3://$R2_BUCKET/latest.json" \
             --content-type "application/json" \
             --cache-control "public, max-age=300" \
             --endpoint-url "$R2_ENDPOINT"
