@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 /// 开启统一会话历史后，后台把官方会话迁进共享组的那一轮跑完了（或失败）。
 const CODEX_UNIFY_MIGRATION_FINISHED_EVENT: &str = "codex-unify-migration-finished";
