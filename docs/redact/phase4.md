@@ -42,8 +42,9 @@ Phase 1–3 完成了规则引擎、代理接入和设置页。Phase 4 处理正
 
 `restore_stream_chunk` 的缓冲规则补上了「chunk 恰好切在单个 `{` 之后」的情况：
 `{{EMAIL_…}}` 在任何字节位置被拆开都能正确还原（测试覆盖每个切分位置）。
-`flush_stream_restore` 遇到不是合法 UTF-8 的剩余内容时原样返回，不再用
-`from_utf8_lossy` 改写字节。
+chunk 切在多字节字符中间时，只处理合法前缀、把不完整字符留在缓冲区，该 chunk 里
+完整的占位符仍会还原。`flush_stream_restore` 遇到不是合法 UTF-8 的剩余内容时原样返回，
+不再用 `from_utf8_lossy` 改写字节。
 
 ## 5. 性能
 

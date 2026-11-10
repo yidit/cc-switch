@@ -104,7 +104,7 @@
 ```
 
 - 请求体在**最终发送前**脱敏，避免 provider adapter 之间重复处理。
-- 响应还原复用 `src-tauri/src/proxy/sse` 的缓冲能力，处理跨 chunk 的占位符。
+- 响应还原复用 `src-tauri/src/proxy/sse` 的缓冲能力，处理跨 chunk 的占位符；透传与所有格式转换分支（Claude 中转、Codex 指向 Anthropic/Chat 上游等）都要还原。
 - `conversation_fingerprint` 与缓存键使用**原文**计算，避免脱敏影响命中率。
 - 多次 provider 重试复用同一份掩码映射。
 
