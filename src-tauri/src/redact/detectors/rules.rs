@@ -21,20 +21,55 @@ impl CustomRuleDetector {
     pub fn new(rules: &[CustomRule]) -> Self {
         let rules = rules
             .iter()
-            .filter_map(|rule| match Regex::new(&rule.pattern) {
+            .filter_map(|rule| match compile(rule) {
                 Ok(regex) => Some(CompiledRule {
                     regex,
                     kind: rule.kind,
                     action: rule.action,
                 }),
                 Err(error) => {
-                    log::warn!("忽略无效的脱敏规则 {}: {error}", rule.name);
+                    log::warn!("忽略无效的脱敏规则: {}", error.message(&rule.name));
                     None
                 }
             })
             .collect();
         Self { rules }
     }
+}
+
+fn compile(rule: &CustomRule) -> Result<Regex, RuleError> {
+    if rule.pattern.trim().is_empty() {
+        return Err(RuleError::Empty);
+    }
+    Regex::new(&rule.pattern).map_err(|error| RuleError::Invalid(error.to_string()))
+}
+
+/// 规则不可用的原因。
+enum RuleError {
+    /// 正则为空，匹配不到任何有效区间。
+    Empty,
+    /// 正则无法编译。
+    Invalid(String),
+}
+
+impl RuleError {
+    fn message(&self, name: &str) -> String {
+        match self {
+            RuleError::Empty => format!("规则 {name} 的正则为空"),
+            RuleError::Invalid(error) => format!("规则 {name}: {error}"),
+        }
+    }
+}
+
+/// 列出配置里无法使用的规则。
+///
+/// 引擎只跳过无效规则并告警；`failClosed` 开启时，调用方应据此拒绝请求，
+/// 避免用户以为敏感信息已被处理、实际上原文被发了出去。
+pub fn invalid_rules(rules: &[CustomRule]) -> Vec<String> {
+    rules
+        .iter()
+        .filter_map(|rule| compile(rule).err().map(|error| error.message(&rule.name)))
+        .collect()
 }
 
 impl Detector for CustomRuleDetector {
@@ -90,5 +125,17 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].kind, Kind::Account);
+    }
+
+    #[test]
+    fn reports_empty_and_uncompilable_rules() {
+        let messages = invalid_rules(&[
+            rule("(", Kind::Secret, Action::Placeholder),
+            rule("   ", Kind::Secret, Action::Placeholder),
+            rule(r"\d+", Kind::Secret, Action::Placeholder),
+        ]);
+
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].contains("规则 test"));
     }
 }

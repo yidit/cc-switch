@@ -72,7 +72,7 @@ fn is_opencode_upstream(upstream_host: Option<&str>) -> bool {
 /// it must not change between the turns of a conversation. Claude Desktop hands
 /// CC Switch a fresh id on every request, which defeats that; hashing the
 /// conversation prefix keeps the id stable while still separating conversations.
-fn conversation_fingerprint(body: &Value) -> Option<String> {
+pub(crate) fn conversation_fingerprint(body: &Value) -> Option<String> {
     let mut hasher = Sha256::new();
     let mut fed = false;
     if let Some(system) = body.get("system") {
@@ -373,6 +373,11 @@ pub struct RequestForwarder {
     optimizer_config: OptimizerConfig,
     /// Copilot 优化器配置
     copilot_optimizer_config: CopilotOptimizerConfig,
+    /// 脱敏前基于原文算好的会话指纹。
+    ///
+    /// 脱敏会改写 system / messages，占位符若按请求随机生成，指纹就会每轮漂移；
+    /// 这里优先使用请求进入时算好的值。
+    conversation_fingerprint_hint: Option<String>,
     /// 非流式请求超时（秒）
     non_streaming_timeout: std::time::Duration,
     /// 流式请求响应头等待超时（秒）
@@ -519,6 +524,7 @@ impl RequestForwarder {
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,
+            conversation_fingerprint_hint: None,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
             streaming_first_byte_timeout: std::time::Duration::from_secs(
                 streaming_first_byte_timeout,
@@ -552,6 +558,12 @@ impl RequestForwarder {
     /// 这个请求走故障转移队列（故障转移开着）。
     pub fn failover_chain(mut self, failover_chain: bool) -> Self {
         self.failover_chain = failover_chain;
+        self
+    }
+
+    /// 使用脱敏前基于原文算好的会话指纹。
+    pub fn with_conversation_fingerprint(mut self, hint: Option<String>) -> Self {
+        self.conversation_fingerprint_hint = hint;
         self
     }
 
@@ -1599,7 +1611,10 @@ impl RequestForwarder {
             && native_session_header(headers).is_none()
             && is_opencode_upstream(base_url_host.as_deref())
         {
-            conversation_fingerprint(&mapped_body)
+            self.conversation_fingerprint_hint
+                .clone()
+                // 没有预计算值时（非 handler 构造的场景）退回映射后的请求体。
+                .or_else(|| conversation_fingerprint(&mapped_body))
         } else {
             None
         };

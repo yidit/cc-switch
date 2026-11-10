@@ -12,6 +12,8 @@ pub struct RedactPreviewResult {
     pub hits: usize,
     /// 写入的占位符数量。
     pub placeholders: usize,
+    /// 配置里无法使用的自定义规则（预览会跳过它们）。
+    pub errors: Vec<String>,
 }
 
 /// 用当前保存的脱敏配置预览一段文本。
@@ -22,13 +24,15 @@ pub fn preview_redaction(text: String) -> Result<RedactPreviewResult, String> {
     let mut config = crate::settings::redact_config();
     config.enabled = true;
 
+    let errors = crate::redact::invalid_rules(&config.rules);
     let engine = crate::redact::Engine::with_builtin(&config);
-    let mut table = crate::redact::PlaceholderTable::new();
+    let mut table = crate::redact::PlaceholderTable::from_config(&config);
     let outcome = engine.mask_text(&text, &config, &mut table);
 
     Ok(RedactPreviewResult {
         masked: outcome.text,
         hits: outcome.hits.len(),
         placeholders: outcome.placeholders,
+        errors,
     })
 }

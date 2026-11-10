@@ -5,9 +5,10 @@
 
 use std::collections::HashMap;
 
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::types::Kind;
+use super::types::{Kind, RedactConfig};
 
 /// RFC 4648 base32 的小写字母表。
 const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
@@ -21,7 +22,15 @@ pub struct PlaceholderTable {
     forward: HashMap<String, String>,
     /// 占位符 → 原值。
     backward: HashMap<String, String>,
-    rng: Rng,
+    source: Source,
+}
+
+/// 占位符后缀的来源。
+enum Source {
+    /// 按请求随机（没有配置盐时的回退）。
+    Random(Rng),
+    /// 按设备盐派生：同一盐下相同原值总是得到相同占位符。
+    Salted(Vec<u8>),
 }
 
 impl PlaceholderTable {
@@ -35,11 +44,31 @@ impl PlaceholderTable {
         Self::from_rng(Rng::from_seed(seed))
     }
 
+    /// 用设备盐创建：相同 `salt`、相同原值在不同请求里得到同一个占位符。
+    ///
+    /// 这样上游提示缓存与会话指纹不会因为占位符变化而失效；盐由本机随机
+    /// 生成并随设置保存，不同设备之间互不相同。
+    pub fn with_salt(salt: &str) -> Self {
+        Self {
+            forward: HashMap::new(),
+            backward: HashMap::new(),
+            source: Source::Salted(salt.as_bytes().to_vec()),
+        }
+    }
+
+    /// 按配置里的盐创建；没有盐（旧配置）时退化为按请求随机。
+    pub fn from_config(config: &RedactConfig) -> Self {
+        match config.salt.as_deref() {
+            Some(salt) => Self::with_salt(salt),
+            None => Self::new(),
+        }
+    }
+
     fn from_rng(rng: Rng) -> Self {
         Self {
             forward: HashMap::new(),
             backward: HashMap::new(),
-            rng,
+            source: Source::Random(rng),
         }
     }
 
@@ -49,11 +78,18 @@ impl PlaceholderTable {
             return existing.clone();
         }
 
+        let mut attempt = 0u32;
         let placeholder = loop {
-            let candidate = format!("{{{{{}_{}}}}}", kind.as_str(), self.rng.base32(SUFFIX_LEN));
+            let suffix = match &mut self.source {
+                Source::Random(rng) => rng.base32(SUFFIX_LEN),
+                Source::Salted(salt) => salted_suffix(salt, kind, value, attempt),
+            };
+            let candidate = format!("{{{{{}_{}}}}}", kind.as_str(), suffix);
             if !self.backward.contains_key(&candidate) {
                 break candidate;
             }
+            // 掩码空间是 40 bit，撞车概率极低；换一个派生输入继续尝试。
+            attempt = attempt.wrapping_add(1);
         };
 
         self.forward.insert(value.to_string(), placeholder.clone());
@@ -142,6 +178,31 @@ impl Rng {
     }
 }
 
+/// 由「盐 + 类型 + 原值 + 尝试次数」派生 8 位 base32 后缀。
+///
+/// 取 SHA-256 的前 5 字节（40 bit）映射到 base32 字母表；同一输入结果固定。
+fn salted_suffix(salt: &[u8], kind: Kind, value: &str, attempt: u32) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(salt);
+    hasher.update(kind.as_str().as_bytes());
+    // 用 0 分隔，避免 `kind` 与 `value` 拼接后产生歧义。
+    hasher.update([0u8]);
+    hasher.update(value.as_bytes());
+    hasher.update(attempt.to_le_bytes());
+    let digest = hasher.finalize();
+
+    let mut bits: u64 = 0;
+    for byte in digest.iter().take(5) {
+        bits = (bits << 8) | u64::from(*byte);
+    }
+
+    let mut out = String::with_capacity(SUFFIX_LEN);
+    for index in (0..SUFFIX_LEN).rev() {
+        out.push(ALPHABET[((bits >> (index * 5)) & 31) as usize] as char);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +273,28 @@ mod tests {
         assert_eq!(
             first.placeholder_for("value", Kind::Secret),
             second.placeholder_for("value", Kind::Secret)
+        );
+    }
+
+    #[test]
+    fn salt_keeps_placeholders_stable_across_requests() {
+        let mut first = PlaceholderTable::with_salt("device-salt");
+        let mut second = PlaceholderTable::with_salt("device-salt");
+
+        let a = first.placeholder_for("alice@example.com", Kind::Email);
+        let b = second.placeholder_for("alice@example.com", Kind::Email);
+        assert_eq!(a, b, "同一盐下相同原值必须得到同一个占位符");
+        assert!(is_placeholder(&a, Kind::Email), "{a}");
+        assert_eq!(second.restore(&b), "alice@example.com");
+    }
+
+    #[test]
+    fn salt_changes_the_suffix() {
+        let mut first = PlaceholderTable::with_salt("salt-a");
+        let mut second = PlaceholderTable::with_salt("salt-b");
+        assert_ne!(
+            first.placeholder_for("alice@example.com", Kind::Email),
+            second.placeholder_for("alice@example.com", Kind::Email)
         );
     }
 }

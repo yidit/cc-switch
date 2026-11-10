@@ -9,26 +9,42 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::redact::{
+    invalid_rules,
     json::{mask_json, restore_json},
     Engine, PlaceholderTable, RedactConfig,
 };
 
 /// 对请求 JSON 做脱敏。
 ///
-/// 未开启或没有命中时返回 `None`，调用方据此跳过响应还原。
-pub fn mask_request_body(body: &mut Value, config: &RedactConfig) -> Option<Arc<PlaceholderTable>> {
+/// - 未开启时返回 `Ok(None)`；
+/// - 没有命中时返回 `Ok(None)`，调用方据此跳过响应还原；
+/// - 开启 `failClosed` 且配置里的自定义规则无法使用时返回 `Err`，调用方必须
+///   拒绝请求，不能把原文发给上游。
+pub fn mask_request_body(
+    body: &mut Value,
+    config: &RedactConfig,
+) -> Result<Option<Arc<PlaceholderTable>>, String> {
     if !config.enabled {
-        return None;
+        return Ok(None);
+    }
+
+    let errors = invalid_rules(&config.rules);
+    if !errors.is_empty() {
+        if config.fail_closed {
+            return Err(format!("请求脱敏配置无效：{}", errors.join("；")));
+        }
+        log::warn!("请求脱敏规则无效，已跳过：{}", errors.join("；"));
     }
 
     let engine = Engine::with_builtin(config);
-    let mut table = PlaceholderTable::new();
+    // 配置了盐时按盐派生占位符，保证跨请求稳定；老配置没有盐则按请求随机。
+    let mut table = PlaceholderTable::from_config(config);
     let stats = mask_json(body, &engine, config, &mut table);
 
     if stats.placeholders == 0 && stats.hits == 0 {
-        return None;
+        return Ok(None);
     }
-    Some(Arc::new(table))
+    Ok(Some(Arc::new(table)))
 }
 
 /// 还原非流式响应体。
@@ -84,14 +100,17 @@ pub fn restore_stream_chunk(
 }
 
 /// 流结束时把 `pending` 里剩余的内容还原并返回。
+///
+/// 剩余内容不是合法 UTF-8 时原样返回，避免 `from_utf8_lossy` 改写字节。
 pub fn flush_stream_restore(table: &PlaceholderTable, pending: &mut Vec<u8>) -> Option<Vec<u8>> {
     if pending.is_empty() {
         return None;
     }
-    let text = String::from_utf8_lossy(pending);
-    let restored = table.restore(&text);
-    pending.clear();
-    Some(restored.into_bytes())
+    let bytes = std::mem::take(pending);
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => Some(table.restore(text).into_bytes()),
+        Err(_) => Some(bytes),
+    }
 }
 
 /// 占位符最长约 24 字节；留出余量，超过这个长度的 `{{…` 不当作不完整占位符。
@@ -99,14 +118,22 @@ const MAX_PLACEHOLDER_BYTES: usize = 64;
 
 /// 返回应当保留到下一个 chunk 的起点。
 fn incomplete_placeholder_start(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+
+    // 末尾单个 `{` 可能只是 `{{` 的前半个：chunk 恰好切在这里时也要缓存。
+    if len > 0 && bytes[len - 1] == b'{' && (len < 2 || bytes[len - 2] != b'{') {
+        return len - 1;
+    }
+
     let Some(start) = text.rfind("{{") else {
-        return text.len();
+        return len;
     };
     let tail = &text[start..];
     if !tail.contains("}}") && tail.len() <= MAX_PLACEHOLDER_BYTES {
         start
     } else {
-        text.len()
+        len
     }
 }
 
@@ -125,7 +152,9 @@ mod tests {
     #[test]
     fn masks_request_body_and_tracks_placeholders() {
         let mut body = json!({"content": "mail jane.smith@gmail.com"});
-        let table = mask_request_body(&mut body, &enabled()).expect("应有命中");
+        let table = mask_request_body(&mut body, &enabled())
+            .expect("配置有效")
+            .expect("应有命中");
 
         let text = body["content"].as_str().unwrap();
         assert!(text.contains("{{EMAIL_"));
@@ -135,7 +164,69 @@ mod tests {
     #[test]
     fn returns_none_when_nothing_is_masked() {
         let mut body = json!({"content": "nothing sensitive here"});
-        assert!(mask_request_body(&mut body, &enabled()).is_none());
+        assert!(mask_request_body(&mut body, &enabled())
+            .expect("配置有效")
+            .is_none());
+    }
+
+    #[test]
+    fn fail_closed_blocks_invalid_rules() {
+        let config = RedactConfig {
+            enabled: true,
+            rules: vec![crate::redact::CustomRule {
+                name: "broken".to_string(),
+                pattern: "(".to_string(),
+                kind: crate::redact::Kind::Secret,
+                action: crate::redact::Action::Placeholder,
+            }],
+            ..Default::default()
+        };
+        let mut body = json!({"content": "hello"});
+        let error = match mask_request_body(&mut body, &config) {
+            Err(message) => message,
+            Ok(_) => panic!("应拒绝请求"),
+        };
+        assert!(error.contains("broken"), "{error}");
+    }
+
+    #[test]
+    fn fail_open_skips_invalid_rules() {
+        let config = RedactConfig {
+            enabled: true,
+            fail_closed: false,
+            rules: vec![crate::redact::CustomRule {
+                name: "broken".to_string(),
+                pattern: "(".to_string(),
+                kind: crate::redact::Kind::Secret,
+                action: crate::redact::Action::Placeholder,
+            }],
+            ..Default::default()
+        };
+        let mut body = json!({"content": "mail jane.smith@gmail.com"});
+        let table = mask_request_body(&mut body, &config)
+            .expect("fail-open 不应报错")
+            .expect("内置规则仍应命中");
+        assert!(body["content"].as_str().unwrap().contains("{{EMAIL_"));
+        assert_eq!(table.len(), 1);
+    }
+
+    #[test]
+    fn salted_config_produces_stable_placeholders() {
+        let config = RedactConfig {
+            enabled: true,
+            salt: Some("device-salt".to_string()),
+            ..Default::default()
+        };
+        let mut first = json!({"content": "mail jane.smith@gmail.com"});
+        let mut second = json!({"content": "mail jane.smith@gmail.com"});
+
+        mask_request_body(&mut first, &config).unwrap().unwrap();
+        mask_request_body(&mut second, &config).unwrap().unwrap();
+
+        assert_eq!(
+            first["content"], second["content"],
+            "同一盐下相同原值必须得到同一个占位符"
+        );
     }
 
     #[test]
@@ -182,5 +273,43 @@ mod tests {
 
         let flushed = flush_stream_restore(&table, &mut pending).unwrap();
         assert_eq!(String::from_utf8(flushed).unwrap(), "jane.smith@gmail.com");
+    }
+
+    #[test]
+    fn restores_a_placeholder_split_at_every_boundary() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let placeholder = table.placeholder_for("jane.smith@gmail.com", crate::redact::Kind::Email);
+
+        for split in 0..=placeholder.len() {
+            let mut pending = Vec::new();
+            let mut out = Vec::new();
+            out.extend(restore_stream_chunk(
+                &table,
+                &mut pending,
+                &placeholder.as_bytes()[..split],
+            ));
+            out.extend(restore_stream_chunk(
+                &table,
+                &mut pending,
+                &placeholder.as_bytes()[split..],
+            ));
+
+            assert_eq!(
+                String::from_utf8(out).unwrap(),
+                "jane.smith@gmail.com",
+                "在字节 {split} 处切开时未还原"
+            );
+            assert!(pending.is_empty(), "在字节 {split} 处切开后仍有余留");
+        }
+    }
+
+    #[test]
+    fn flush_keeps_non_utf8_bytes_untouched() {
+        let table = PlaceholderTable::with_seed(7);
+        let mut pending = vec![0xff, 0xfe, 0x00];
+
+        let flushed = flush_stream_restore(&table, &mut pending).expect("应返回余留内容");
+        assert_eq!(flushed, vec![0xff, 0xfe, 0x00]);
+        assert!(pending.is_empty());
     }
 }

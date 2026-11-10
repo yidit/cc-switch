@@ -55,6 +55,31 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
+/// 对请求体应用脱敏，并把占位符映射记录到上下文。
+///
+/// `failClosed` 开启且配置不可用时返回错误，调用方应中止请求、不把原文发给上游。
+fn apply_request_redaction(body: &mut Value, ctx: &mut RequestContext) -> Result<(), ProxyError> {
+    let config = crate::settings::redact_config();
+    if !config.enabled {
+        return Ok(());
+    }
+
+    // 指纹必须在改写请求体之前算：占位符若退化为按请求随机，指纹会每轮漂移。
+    // 只在脱敏开启时计算，未开启的请求保持零额外开销。
+    if ctx.conversation_fingerprint.is_none() {
+        ctx.conversation_fingerprint = crate::proxy::forwarder::conversation_fingerprint(body);
+    }
+
+    match crate::redact::proxy::mask_request_body(body, &config) {
+        Ok(Some(table)) => {
+            ctx.redaction = Some(table);
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(message) => Err(ProxyError::Internal(message)),
+    }
+}
+
 // ============================================================================
 // 健康检查和状态查询（简单端点）
 // ============================================================================
@@ -357,11 +382,7 @@ async fn handle_messages_for_app(
     .await?;
 
     // 请求体在最终发送前脱敏；占位符映射随 ctx 交给响应处理还原。
-    if let Some(redaction) =
-        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
-    {
-        ctx.redaction = Some(redaction);
-    }
+    apply_request_redaction(&mut body, &mut ctx)?;
 
     let raw_endpoint = uri
         .path_and_query()
@@ -1016,11 +1037,7 @@ pub async fn handle_chat_completions(
         stack,
     )
     .await?;
-    if let Some(redaction) =
-        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
-    {
-        ctx.redaction = Some(redaction);
-    }
+    apply_request_redaction(&mut body, &mut ctx)?;
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
 
     let is_stream = body
@@ -1143,11 +1160,7 @@ async fn handle_responses_for_app(
         stack,
     )
     .await?;
-    if let Some(redaction) =
-        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
-    {
-        ctx.redaction = Some(redaction);
-    }
+    apply_request_redaction(&mut body, &mut ctx)?;
     let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body
@@ -1416,11 +1429,7 @@ async fn handle_codex_standalone_passthrough(
         None,
     )
     .await?;
-    if let Some(redaction) =
-        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
-    {
-        ctx.redaction = Some(redaction);
-    }
+    apply_request_redaction(&mut body, &mut ctx)?;
     let endpoint = endpoint_with_query(&uri, canonical_endpoint);
 
     let forwarder = ctx.create_forwarder(&state);
@@ -1514,11 +1523,7 @@ async fn handle_responses_compact_for_app(
         stack,
     )
     .await?;
-    if let Some(redaction) =
-        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
-    {
-        ctx.redaction = Some(redaction);
-    }
+    apply_request_redaction(&mut body, &mut ctx)?;
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
 
     let is_stream = body
@@ -2682,11 +2687,7 @@ pub async fn handle_gemini(
     .await?
     .with_model_from_uri(&uri);
 
-    if let Some(redaction) =
-        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
-    {
-        ctx.redaction = Some(redaction);
-    }
+    apply_request_redaction(&mut body, &mut ctx)?;
 
     // 提取完整的路径和查询参数
     let endpoint = uri

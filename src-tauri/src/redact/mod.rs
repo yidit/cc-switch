@@ -17,6 +17,7 @@ use detectors::{
     AccountDetector, CustomRuleDetector, EmailDetector, PhoneDetector, SecretDetector, WordDetector,
 };
 
+pub use detectors::rules::invalid_rules;
 pub use json::{mask_json, restore_json, JsonMaskStats};
 pub use placeholder::PlaceholderTable;
 pub use types::{Action, CustomRule, Hit, Kind, MaskOutcome, RedactConfig};

@@ -16,6 +16,10 @@ impl Detector for PhoneDetector {
         if !config.personal || !kind_enabled(config, Kind::Phone) {
             return Vec::new();
         }
+        // 廉价前置判断：没有数字的文本不可能命中。
+        if !text.bytes().any(|byte| byte.is_ascii_digit()) {
+            return Vec::new();
+        }
 
         let mut hits = Vec::new();
         for regex in regexes() {

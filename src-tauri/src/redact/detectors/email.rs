@@ -17,6 +17,10 @@ impl Detector for EmailDetector {
         if !config.personal || !kind_enabled(config, Kind::Email) {
             return Vec::new();
         }
+        // 廉价前置判断：没有 @ 的文本不可能命中，长上下文里能省掉整个正则扫描。
+        if !text.contains('@') {
+            return Vec::new();
+        }
 
         let mut hits = Vec::new();
         for captures in regex().captures_iter(text) {
