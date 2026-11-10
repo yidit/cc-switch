@@ -8,6 +8,7 @@
 //! - 响应：把回复中的占位符还原为原值（流式 SSE 在 Phase 2 接入）。
 
 pub mod detectors;
+pub mod json;
 pub mod placeholder;
 pub mod types;
 
@@ -16,6 +17,7 @@ use detectors::{
     WordDetector,
 };
 
+pub use json::{mask_json, restore_json, JsonMaskStats};
 pub use placeholder::PlaceholderTable;
 pub use types::{Action, CustomRule, Hit, Kind, MaskOutcome, RedactConfig};
 
