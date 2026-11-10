@@ -289,7 +289,7 @@ async fn download_file(
     let client = crate::proxy::http_client::get();
     let response = client
         .get(url)
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(300))
         .send()
         .await
         .map_err(|error| format!("下载失败：{error}"))?;

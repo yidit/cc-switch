@@ -79,8 +79,9 @@ pub fn redact_model_status() -> ModelStatus {
 /// 开始下载模型与运行时；进度通过 `redact_model_status` 轮询。
 #[tauri::command]
 pub async fn download_redact_model() -> Result<(), String> {
-    // 立刻返回，下载在后台进行；失败原因会写进状态。
-    let _ = tauri::async_runtime::spawn(async {
+    // 立刻返回，下载在后台进行；句柄在函数结束时丢弃，任务继续运行。
+    #[allow(clippy::let_underscore_future)]
+    let _download_task = tauri::async_runtime::spawn(async {
         if let Err(error) = model_store::download_all().await {
             log::error!("[redact] 模型下载失败: {error}");
         }
