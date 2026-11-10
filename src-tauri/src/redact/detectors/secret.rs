@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::redact::{Detector, Hit, Kind, RedactConfig};
+use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
 
 /// 识别 API key、私钥、JWT、连接串密码等。
 pub struct SecretDetector;
@@ -33,6 +33,7 @@ impl Detector for SecretDetector {
                     start: found.start(),
                     end: found.end(),
                     kind: Kind::Secret,
+                    action: Action::Placeholder,
                 });
             }
         }

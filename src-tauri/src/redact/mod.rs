@@ -11,7 +11,10 @@ pub mod detectors;
 pub mod placeholder;
 pub mod types;
 
-use detectors::{AccountDetector, EmailDetector, PhoneDetector, SecretDetector};
+use detectors::{
+    AccountDetector, CustomRuleDetector, EmailDetector, PhoneDetector, SecretDetector,
+    WordDetector,
+};
 
 pub use placeholder::PlaceholderTable;
 pub use types::{Action, CustomRule, Hit, Kind, MaskOutcome, RedactConfig};
@@ -34,8 +37,8 @@ pub struct Engine {
 impl Engine {
     /// 按配置构建内置检测器。
     ///
-    /// 目前注册密钥、邮箱、电话与账户检测器；`personal` 关闭时会跳过
-    /// 后三者，`kinds` 再进一步限定类型。
+    /// `secrets` / `personal` 控制内置规则；自定义词与自定义规则由用户
+    /// 显式配置，只要总开关打开就生效。
     pub fn with_builtin(config: &RedactConfig) -> Self {
         let mut detectors: Vec<Box<dyn Detector>> = Vec::new();
         if config.secrets {
@@ -45,6 +48,16 @@ impl Engine {
             detectors.push(Box::new(EmailDetector));
             detectors.push(Box::new(PhoneDetector));
             detectors.push(Box::new(AccountDetector));
+        }
+        if !config.words.is_empty() {
+            detectors.push(Box::new(WordDetector::new(
+                &config.words,
+                config.words_any_case,
+                config.words_whole,
+            )));
+        }
+        if !config.rules.is_empty() {
+            detectors.push(Box::new(CustomRuleDetector::new(&config.rules)));
         }
         Self { detectors }
     }
@@ -87,8 +100,14 @@ impl Engine {
         for hit in &hits {
             out.push_str(&text[cursor..hit.start]);
             let value = &text[hit.start..hit.end];
-            out.push_str(&table.placeholder_for(value, hit.kind));
-            placeholders += 1;
+            match hit.action {
+                Action::Placeholder => {
+                    out.push_str(&table.placeholder_for(value, hit.kind));
+                    placeholders += 1;
+                }
+                Action::Mask => out.push_str("[REDACTED]"),
+                Action::Drop => {}
+            }
             cursor = hit.end;
         }
         out.push_str(&text[cursor..]);
@@ -110,6 +129,14 @@ impl Engine {
         }
 
         all.retain(|hit| hit.start < hit.end && hit.end <= text.len());
+        // 白名单按原值精确匹配，对内置检测器与自定义词/规则一律生效。
+        all.retain(|hit| {
+            let value = &text[hit.start..hit.end];
+            !config
+                .allow
+                .iter()
+                .any(|allowed| allowed.as_str() == value)
+        });
         debug_assert!(
             all.iter()
                 .all(|hit| text.is_char_boundary(hit.start) && text.is_char_boundary(hit.end)),
@@ -152,6 +179,7 @@ mod tests {
                         start,
                         end: start + word.len(),
                         kind: Kind::Person,
+                        action: Action::Placeholder,
                     });
                     from = start + word.len();
                 }
@@ -264,5 +292,68 @@ mod tests {
         assert!(outcome.text.contains("{{PHONE_"));
         assert!(!outcome.text.contains("jane.smith@gmail.com"));
         assert!(!outcome.text.contains("415-555-0132"));
+    }
+
+    #[test]
+    fn builtin_engine_masks_custom_words() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let config = RedactConfig {
+            enabled: true,
+            words: vec!["秘密项目".to_string()],
+            ..Default::default()
+        };
+        let text = "这是秘密项目，不要外传";
+        let outcome = Engine::with_builtin(&config).mask_text(text, &config, &mut table);
+
+        assert!(outcome.text.contains("{{PERSON_"));
+        assert!(!outcome.text.contains("秘密项目"));
+        assert_eq!(table.restore(&outcome.text), text);
+    }
+
+    #[test]
+    fn whitelist_keeps_values_untouched() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let config = RedactConfig {
+            enabled: true,
+            allow: vec!["jane.smith@gmail.com".to_string()],
+            ..Default::default()
+        };
+        let text = "mail jane.smith@gmail.com";
+        let outcome = Engine::with_builtin(&config).mask_text(text, &config, &mut table);
+
+        assert_eq!(outcome.text, text);
+        assert!(outcome.hits.is_empty());
+    }
+
+    #[test]
+    fn custom_rules_support_mask_and_drop() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let config = RedactConfig {
+            enabled: true,
+            rules: vec![
+                CustomRule {
+                    name: "ticket".to_string(),
+                    pattern: r"TICKET-[0-9]{6}".to_string(),
+                    kind: Kind::Secret,
+                    action: Action::Mask,
+                },
+                CustomRule {
+                    name: "temp-path".to_string(),
+                    pattern: r"/tmp/[a-z]+".to_string(),
+                    kind: Kind::Secret,
+                    action: Action::Drop,
+                },
+            ],
+            ..Default::default()
+        };
+        let outcome = Engine::with_builtin(&config).mask_text(
+            "see TICKET-123456 at /tmp/abc",
+            &config,
+            &mut table,
+        );
+
+        assert!(outcome.text.contains("[REDACTED]"));
+        assert!(!outcome.text.contains("TICKET-123456"));
+        assert!(!outcome.text.contains("/tmp/abc"));
     }
 }

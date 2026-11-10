@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::redact::{Detector, Hit, Kind, RedactConfig};
+use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
 
 pub struct PhoneDetector;
 
@@ -27,6 +27,7 @@ impl Detector for PhoneDetector {
                     start: found.start(),
                     end: found.end(),
                     kind: Kind::Phone,
+                    action: Action::Placeholder,
                 });
             }
         }

@@ -51,6 +51,8 @@ pub struct Hit {
     pub start: usize,
     pub end: usize,
     pub kind: Kind,
+    /// 该命中应如何替换；内置检测器默认使用占位符。
+    pub action: Action,
 }
 
 /// 替换动作。
@@ -145,7 +147,7 @@ pub struct MaskOutcome {
     pub text: String,
     /// 命中的区间，按位置排序且互不重叠。
     pub hits: Vec<Hit>,
-    /// 实际写入的占位符数量（同一原值重复出现时仍计一次）。
+    /// 实际写入的占位符数量（Mask / Drop 动作不计入）。
     pub placeholders: usize,
 }
 

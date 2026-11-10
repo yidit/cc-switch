@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::redact::{Detector, Hit, Kind, RedactConfig};
+use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
 
 pub struct EmailDetector;
 
@@ -30,6 +30,7 @@ impl Detector for EmailDetector {
                 start: found.start(),
                 end: found.end(),
                 kind: Kind::Email,
+                action: Action::Placeholder,
             });
         }
         hits

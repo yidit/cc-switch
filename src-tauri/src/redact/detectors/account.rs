@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::redact::{Detector, Hit, Kind, RedactConfig};
+use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
 
 pub struct AccountDetector;
 
@@ -28,6 +28,7 @@ impl Detector for AccountDetector {
                     start: found.start(),
                     end: found.end(),
                     kind: Kind::Account,
+                    action: Action::Placeholder,
                 });
             }
         }
