@@ -10,6 +10,7 @@
 pub mod detectors;
 pub mod json;
 pub mod placeholder;
+pub mod proxy;
 pub mod types;
 
 use detectors::{
