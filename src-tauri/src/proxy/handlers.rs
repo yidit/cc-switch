@@ -357,10 +357,9 @@ async fn handle_messages_for_app(
     .await?;
 
     // 请求体在最终发送前脱敏；占位符映射随 ctx 交给响应处理还原。
-    if let Some(redaction) = crate::redact::proxy::mask_request_body(
-        &mut body,
-        &crate::settings::redact_config(),
-    ) {
+    if let Some(redaction) =
+        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
+    {
         ctx.redaction = Some(redaction);
     }
 
@@ -1017,10 +1016,9 @@ pub async fn handle_chat_completions(
         stack,
     )
     .await?;
-    if let Some(redaction) = crate::redact::proxy::mask_request_body(
-        &mut body,
-        &crate::settings::redact_config(),
-    ) {
+    if let Some(redaction) =
+        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
+    {
         ctx.redaction = Some(redaction);
     }
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
@@ -1145,10 +1143,9 @@ async fn handle_responses_for_app(
         stack,
     )
     .await?;
-    if let Some(redaction) = crate::redact::proxy::mask_request_body(
-        &mut body,
-        &crate::settings::redact_config(),
-    ) {
+    if let Some(redaction) =
+        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
+    {
         ctx.redaction = Some(redaction);
     }
     let endpoint = endpoint_with_query(&uri, "/responses");
@@ -1419,10 +1416,9 @@ async fn handle_codex_standalone_passthrough(
         None,
     )
     .await?;
-    if let Some(redaction) = crate::redact::proxy::mask_request_body(
-        &mut body,
-        &crate::settings::redact_config(),
-    ) {
+    if let Some(redaction) =
+        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
+    {
         ctx.redaction = Some(redaction);
     }
     let endpoint = endpoint_with_query(&uri, canonical_endpoint);
@@ -1518,10 +1514,9 @@ async fn handle_responses_compact_for_app(
         stack,
     )
     .await?;
-    if let Some(redaction) = crate::redact::proxy::mask_request_body(
-        &mut body,
-        &crate::settings::redact_config(),
-    ) {
+    if let Some(redaction) =
+        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
+    {
         ctx.redaction = Some(redaction);
     }
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
@@ -2687,10 +2682,9 @@ pub async fn handle_gemini(
     .await?
     .with_model_from_uri(&uri);
 
-    if let Some(redaction) = crate::redact::proxy::mask_request_body(
-        &mut body,
-        &crate::settings::redact_config(),
-    ) {
+    if let Some(redaction) =
+        crate::redact::proxy::mask_request_body(&mut body, &crate::settings::redact_config())
+    {
         ctx.redaction = Some(redaction);
     }
 

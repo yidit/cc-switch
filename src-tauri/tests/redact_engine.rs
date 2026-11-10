@@ -20,10 +20,10 @@ const PLACEHOLDER: &str = r"\{\{[A-Z_]+_[a-z2-7]{8}\}\}";
 const RULE_KINDS: [&str; 4] = ["SECRET", "EMAIL", "PHONE", "ACCOUNT"];
 
 fn load_cases() -> Vec<Value> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/redact/eval-cases.json");
-    let raw = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("读取 {} 失败: {e}", path.display()));
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/redact/eval-cases.json");
+    let raw =
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("读取 {} 失败: {e}", path.display()));
     let fixture: Value = serde_json::from_str(&raw).expect("评估语料不是合法 JSON");
     fixture["cases"]
         .as_array()
@@ -101,7 +101,9 @@ fn rule_engine_meets_the_evaluation_baseline() {
 
     // 规则层承诺覆盖的四类必须全中。
     for kind in RULE_KINDS {
-        let count = stats.get(kind).unwrap_or_else(|| panic!("缺少 {kind} 统计"));
+        let count = stats
+            .get(kind)
+            .unwrap_or_else(|| panic!("缺少 {kind} 统计"));
         assert_eq!(
             count.covered, count.mask,
             "{kind} 的 mask 覆盖不完整：{}/{}",

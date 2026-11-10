@@ -14,8 +14,7 @@ pub mod proxy;
 pub mod types;
 
 use detectors::{
-    AccountDetector, CustomRuleDetector, EmailDetector, PhoneDetector, SecretDetector,
-    WordDetector,
+    AccountDetector, CustomRuleDetector, EmailDetector, PhoneDetector, SecretDetector, WordDetector,
 };
 
 pub use json::{mask_json, restore_json, JsonMaskStats};
@@ -135,10 +134,7 @@ impl Engine {
         // 白名单按原值精确匹配，对内置检测器与自定义词/规则一律生效。
         all.retain(|hit| {
             let value = &text[hit.start..hit.end];
-            !config
-                .allow
-                .iter()
-                .any(|allowed| allowed.as_str() == value)
+            !config.allow.iter().any(|allowed| allowed.as_str() == value)
         });
         debug_assert!(
             all.iter()
@@ -219,7 +215,8 @@ mod tests {
     #[test]
     fn masks_and_restores_a_simple_value() {
         let mut table = PlaceholderTable::with_seed(7);
-        let outcome = engine(&["secret"]).mask_text("a secret value", &enabled_config(), &mut table);
+        let outcome =
+            engine(&["secret"]).mask_text("a secret value", &enabled_config(), &mut table);
 
         assert_eq!(outcome.placeholders, 1);
         assert!(!outcome.text.contains("secret"));
@@ -232,7 +229,8 @@ mod tests {
     #[test]
     fn same_value_reuses_the_same_placeholder() {
         let mut table = PlaceholderTable::with_seed(7);
-        let outcome = engine(&["secret"]).mask_text("secret and secret", &enabled_config(), &mut table);
+        let outcome =
+            engine(&["secret"]).mask_text("secret and secret", &enabled_config(), &mut table);
         let mut parts = outcome.text.split(" and ");
         assert_eq!(parts.next().unwrap(), parts.next().unwrap());
     }

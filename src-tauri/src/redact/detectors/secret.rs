@@ -133,9 +133,7 @@ fn always(_value: &str) -> bool {
 
 /// `sk-` 前缀的值还需要像密钥：含数字、不含点（排除 `sk-hynix-...html` 这类 slug）。
 fn looks_like_key(value: &str) -> bool {
-    value.len() >= 24
-        && !value.contains('.')
-        && value.bytes().any(|b| b.is_ascii_digit())
+    value.len() >= 24 && !value.contains('.') && value.bytes().any(|b| b.is_ascii_digit())
 }
 
 /// 通用的值过滤：去掉明显的占位符、变量引用与配置字面量。
@@ -218,10 +216,7 @@ mod tests {
             detect("服务器密码是 Qw8!zLp3mN，用完记得改掉"),
             vec!["Qw8!zLp3mN"]
         );
-        assert_eq!(
-            detect("DB_PASSWORD=Tr0ub4dor&3xyz"),
-            vec!["Tr0ub4dor&3xyz"]
-        );
+        assert_eq!(detect("DB_PASSWORD=Tr0ub4dor&3xyz"), vec!["Tr0ub4dor&3xyz"]);
         assert_eq!(
             detect("aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
             vec!["wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"]
@@ -234,8 +229,10 @@ mod tests {
         assert!(detect("DEBUG=true").is_empty());
         assert!(detect("rg -n 'password|passwd|secret_key|api_token' --glob '*.go'").is_empty());
         assert!(detect("3f2b6c1e-8a4d-4f7e-9b1a-2c3d4e5f6a7b").is_empty());
-        assert!(detect("sha256: 80efc1803eda7c095a79741d2008c07e2e0a57b01bac8825fbeb448fd097998c")
-            .is_empty());
+        assert!(
+            detect("sha256: 80efc1803eda7c095a79741d2008c07e2e0a57b01bac8825fbeb448fd097998c")
+                .is_empty()
+        );
         assert!(detect("toolu_01XkP9qLm2VbT7wZ4nR8sYc3").is_empty());
     }
 

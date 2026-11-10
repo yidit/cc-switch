@@ -50,20 +50,14 @@ impl PlaceholderTable {
         }
 
         let placeholder = loop {
-            let candidate = format!(
-                "{{{{{}_{}}}}}",
-                kind.as_str(),
-                self.rng.base32(SUFFIX_LEN)
-            );
+            let candidate = format!("{{{{{}_{}}}}}", kind.as_str(), self.rng.base32(SUFFIX_LEN));
             if !self.backward.contains_key(&candidate) {
                 break candidate;
             }
         };
 
-        self.forward
-            .insert(value.to_string(), placeholder.clone());
-        self.backward
-            .insert(placeholder.clone(), value.to_string());
+        self.forward.insert(value.to_string(), placeholder.clone());
+        self.backward.insert(placeholder.clone(), value.to_string());
         placeholder
     }
 
@@ -110,9 +104,7 @@ struct Rng {
 impl Rng {
     fn new() -> Self {
         let uuid = Uuid::new_v4();
-        let bytes: [u8; 8] = uuid.as_bytes()[..8]
-            .try_into()
-            .expect("UUID 至少 8 字节");
+        let bytes: [u8; 8] = uuid.as_bytes()[..8].try_into().expect("UUID 至少 8 字节");
         Self::from_seed(u64::from_le_bytes(bytes))
     }
 

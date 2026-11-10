@@ -76,9 +76,7 @@ fn plausible_email(value: &str) -> bool {
         return false;
     }
     // GitHub noreply 地址。
-    if domain == "users.noreply.github.com"
-        || domain.ends_with(".users.noreply.github.com")
-    {
+    if domain == "users.noreply.github.com" || domain.ends_with(".users.noreply.github.com") {
         return false;
     }
     // 媒体文件名：logo@3x.png / intro@2x.mp4
@@ -150,14 +148,18 @@ mod tests {
     fn ignores_ssh_and_bot_addresses() {
         assert!(detect("git clone https://git@gitlab.acme-corp.cn/team/repo.git").is_empty());
         assert!(detect("deploy-bot@git.acme-corp.cn").is_empty());
-        assert!(detect("Author: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>")
-            .is_empty());
+        assert!(detect(
+            "Author: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>"
+        )
+        .is_empty());
     }
 
     #[test]
     fn ignores_url_userinfo() {
-        assert!(detect("DATABASE_URL=postgres://app:hunter2pass@db.acme-corp.cn:5432/orders")
-            .is_empty());
+        assert!(
+            detect("DATABASE_URL=postgres://app:hunter2pass@db.acme-corp.cn:5432/orders")
+                .is_empty()
+        );
     }
 
     #[test]

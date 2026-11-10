@@ -16,10 +16,7 @@ use crate::redact::{
 /// 对请求 JSON 做脱敏。
 ///
 /// 未开启或没有命中时返回 `None`，调用方据此跳过响应还原。
-pub fn mask_request_body(
-    body: &mut Value,
-    config: &RedactConfig,
-) -> Option<Arc<PlaceholderTable>> {
+pub fn mask_request_body(body: &mut Value, config: &RedactConfig) -> Option<Arc<PlaceholderTable>> {
     if !config.enabled {
         return None;
     }

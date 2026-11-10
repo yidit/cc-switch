@@ -73,10 +73,7 @@ fn kind_enabled(config: &RedactConfig, kind: Kind) -> bool {
 
 /// Luhn 校验；同时要求至少 13 位数字。
 fn luhn(value: &str) -> bool {
-    let digits: Vec<u32> = value
-        .chars()
-        .filter_map(|c| c.to_digit(10))
-        .collect();
+    let digits: Vec<u32> = value.chars().filter_map(|c| c.to_digit(10)).collect();
     if digits.len() < 13 {
         return false;
     }
@@ -128,9 +125,7 @@ fn valid_id_card(value: &str) -> bool {
         return false;
     }
 
-    const WEIGHTS: [u32; 17] = [
-        7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2,
-    ];
+    const WEIGHTS: [u32; 17] = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
     const CHECK_CODES: &[u8; 11] = b"10X98765432";
 
     let mut sum = 0;
@@ -185,10 +180,7 @@ mod tests {
         assert!(detect("1761379200123").is_empty());
         assert!(detect("14902266").is_empty());
         assert!(detect("0x004EA5E0").is_empty());
-        assert!(detect(
-            "b855cfee9a1c3d4e5f60718293a4b5c6d7e8f901"
-        )
-        .is_empty());
+        assert!(detect("b855cfee9a1c3d4e5f60718293a4b5c6d7e8f901").is_empty());
         assert!(detect("call_Qm7vT2xLk9RbW4nZ").is_empty());
     }
 

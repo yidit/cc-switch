@@ -15,15 +15,13 @@ const EXPECTED_MASK_VALUES: usize = 47;
 const EXPECTED_KEEP_VALUES: usize = 144;
 
 /// 语料允许的敏感类型。
-const KNOWN_KINDS: [&str; 6] = [
-    "SECRET", "PERSON", "PHONE", "EMAIL", "ACCOUNT", "ADDRESS",
-];
+const KNOWN_KINDS: [&str; 6] = ["SECRET", "PERSON", "PHONE", "EMAIL", "ACCOUNT", "ADDRESS"];
 
 fn load_fixture() -> Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/redact/eval-cases.json");
-    let raw = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("读取 {} 失败: {e}", path.display()));
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/redact/eval-cases.json");
+    let raw =
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("读取 {} 失败: {e}", path.display()));
     serde_json::from_str(&raw).expect("评估语料不是合法 JSON")
 }
 
@@ -81,11 +79,14 @@ fn every_value_appears_in_its_text() {
         let id = case["id"].as_str().unwrap();
         let text = case["text"].as_str().unwrap();
 
-        for (field, values) in [("mask", values_of(case, "mask")), ("keep", values_of(case, "keep"))] {
+        for (field, values) in [
+            ("mask", values_of(case, "mask")),
+            ("keep", values_of(case, "keep")),
+        ] {
             for item in values {
-                let value = item["value"].as_str().unwrap_or_else(|| {
-                    panic!("用例 {id} 的 {field} 项缺少 value")
-                });
+                let value = item["value"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("用例 {id} 的 {field} 项缺少 value"));
                 assert!(
                     text.contains(value),
                     "用例 {id}: {field} 值 {value:?} 不在原文中"
@@ -103,13 +104,10 @@ fn kinds_are_known() {
         let id = case["id"].as_str().unwrap();
         for field in ["mask", "keep"] {
             for item in values_of(case, field) {
-                let kind = item["kind"].as_str().unwrap_or_else(|| {
-                    panic!("用例 {id} 的 {field} 项缺少 kind")
-                });
-                assert!(
-                    KNOWN_KINDS.contains(&kind),
-                    "用例 {id} 出现未知类型 {kind}"
-                );
+                let kind = item["kind"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("用例 {id} 的 {field} 项缺少 kind"));
+                assert!(KNOWN_KINDS.contains(&kind), "用例 {id} 出现未知类型 {kind}");
             }
         }
     }

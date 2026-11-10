@@ -69,11 +69,8 @@ mod tests {
 
     #[test]
     fn emits_hits_with_the_configured_kind_and_action() {
-        let detector = CustomRuleDetector::new(&[rule(
-            r"TICKET-[0-9]{6}",
-            Kind::Secret,
-            Action::Mask,
-        )]);
+        let detector =
+            CustomRuleDetector::new(&[rule(r"TICKET-[0-9]{6}", Kind::Secret, Action::Mask)]);
         let config = RedactConfig::default();
         let hits = detector.detect("see TICKET-123456 now", &config);
 
