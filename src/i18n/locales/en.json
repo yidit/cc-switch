@@ -1191,7 +1191,24 @@
       "ruleRemove": "Remove rule",
       "actionPlaceholder": "Placeholder",
       "actionMask": "Mask",
-      "actionDrop": "Drop"
+      "actionDrop": "Drop",
+      "modelTitle": "Local model",
+      "modelDescription": "Uses AstrLink Guard on this machine to catch names and addresses the rules cannot; the model is only downloaded after you turn it on.",
+      "modelEnabled": "Enable the local model",
+      "modelEnabledDescription": "Covers names, addresses and other free text; download the model files first.",
+      "modelStatusMissing": "Not downloaded yet (about {{size}} MB)",
+      "modelStatusDownloading": "Downloading: {{percent}}%",
+      "modelStatusReady": "Ready (about {{size}} MB)",
+      "modelStatusError": "Download failed; you can retry",
+      "modelUnsupported": "The local model is not available on this platform",
+      "modelDownload": "Download model",
+      "modelDelete": "Delete model",
+      "modelThreshold": "Confidence threshold",
+      "modelThresholdHelp": "Higher is more conservative: fewer false alarms, but more real values can slip through",
+      "modelBudget": "Per-request inference cap (tokens)",
+      "modelBudgetHelp": "Counted from the newest content backwards; anything beyond it is covered by rules only",
+      "modelPrivacyNote": "The model and ONNX Runtime are about 50 MB (varies slightly by platform), downloaded and checked against SHA-256 on first use; inference stays on this machine.",
+      "previewUsedModel": "local model included"
     },
     "appConfig": {
       "configDir": "Config directory"

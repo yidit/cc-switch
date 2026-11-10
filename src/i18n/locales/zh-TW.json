@@ -1192,7 +1192,24 @@
       "ruleRemove": "刪除規則",
       "actionPlaceholder": "佔位符",
       "actionMask": "遮罩",
-      "actionDrop": "刪除"
+      "actionDrop": "刪除",
+      "modelTitle": "本機模型",
+      "modelDescription": "用 AstrLink Guard 在本機辨識人名、地址等規則難以涵蓋的資訊；模型只在開啟後下載。",
+      "modelEnabled": "啟用本機模型",
+      "modelEnabledDescription": "補足人名、地址等自由文字資訊；需要先下載模型檔案。",
+      "modelStatusMissing": "尚未下載（約 {{size}} MB）",
+      "modelStatusDownloading": "正在下載：{{percent}}%",
+      "modelStatusReady": "已就緒（約 {{size}} MB）",
+      "modelStatusError": "下載失敗，可以重試",
+      "modelUnsupported": "目前平台暫不支援本機模型",
+      "modelDownload": "下載模型",
+      "modelDelete": "刪除模型",
+      "modelThreshold": "信心度門檻",
+      "modelThresholdHelp": "調高更保守：誤報更少，也可能漏掉真實資訊",
+      "modelBudget": "每次請求的推理上限（token）",
+      "modelBudgetHelp": "從最新內容往前計算，超出部分只使用規則",
+      "modelPrivacyNote": "模型與 ONNX Runtime 約 50 MB（依平台略有差異），首次啟用時下載並驗證 SHA-256；推理全部在本機完成。",
+      "previewUsedModel": "含本機模型"
     },
     "appConfig": {
       "configDir": "設定目錄"

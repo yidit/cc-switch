@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Play, Plus, Trash2 } from "lucide-react";
+import { Download, Loader2, Play, Plus, Trash2 } from "lucide-react";
 import { settingsApi } from "@/lib/api";
 import type {
   RedactAction,
   RedactConfig,
   RedactKind,
+  RedactModelStatus,
   RedactRule,
 } from "@/types";
 import type { SettingsFormState } from "@/hooks/useSettings";
@@ -51,6 +52,11 @@ const DEFAULT_REDACT: RedactConfig = {
   rules: [],
   allow: [],
   failClosed: true,
+  model: {
+    enabled: false,
+    threshold: 0.8,
+    maxTokensPerRequest: 4096,
+  },
 };
 
 /**
@@ -72,8 +78,45 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
     hits: number;
     placeholders: number;
     errors: string[];
+    usedModel: boolean;
   } | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  const [modelStatus, setModelStatus] = useState<RedactModelStatus | null>(
+    null,
+  );
+  const [thresholdDraft, setThresholdDraft] = useState(
+    String(redact.model.threshold),
+  );
+  const [budgetDraft, setBudgetDraft] = useState(
+    String(redact.model.maxTokensPerRequest),
+  );
+
+  const refreshModelStatus = async () => {
+    try {
+      setModelStatus(await settingsApi.getRedactModelStatus());
+    } catch (error) {
+      console.error("[PrivacySection] 读取模型状态失败", error);
+    }
+  };
+
+  useEffect(() => {
+    void refreshModelStatus();
+  }, []);
+
+  // 下载期间每秒刷新一次进度。
+  useEffect(() => {
+    if (modelStatus?.state !== "downloading") return;
+    const timer = window.setInterval(() => void refreshModelStatus(), 1000);
+    return () => window.clearInterval(timer);
+  }, [modelStatus?.state]);
+
+  useEffect(() => {
+    setThresholdDraft(String(redact.model.threshold));
+  }, [redact.model.threshold]);
+
+  useEffect(() => {
+    setBudgetDraft(String(redact.model.maxTokensPerRequest));
+  }, [redact.model.maxTokensPerRequest]);
 
   useEffect(() => {
     setWordsDraft(redact.words.join("\n"));
@@ -112,6 +155,62 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
     commitRules(ruleDrafts.filter((_, itemIndex) => itemIndex !== index));
   };
 
+  const startModelDownload = async () => {
+    try {
+      await settingsApi.downloadRedactModel();
+      setModelStatus((current) =>
+        current
+          ? { ...current, state: "downloading", downloadedBytes: 0 }
+          : current,
+      );
+      void refreshModelStatus();
+    } catch (error) {
+      console.error("[PrivacySection] 下载模型失败", error);
+    }
+  };
+
+  const deleteModel = async () => {
+    try {
+      await settingsApi.deleteRedactModel();
+      await refreshModelStatus();
+    } catch (error) {
+      console.error("[PrivacySection] 删除模型失败", error);
+    }
+  };
+
+  const toggleModel = (value: boolean) => {
+    update({ model: { ...redact.model, enabled: value } });
+    // 打开时如果模型还没下载，直接开始下载。
+    if (value && modelStatus?.state === "missing") {
+      void startModelDownload();
+    }
+  };
+
+  const commitThreshold = () => {
+    const parsed = Number(thresholdDraft);
+    if (!Number.isFinite(parsed)) {
+      setThresholdDraft(String(redact.model.threshold));
+      return;
+    }
+    const value = Math.min(0.99, Math.max(0.5, Number(parsed.toFixed(2))));
+    setThresholdDraft(String(value));
+    update({ model: { ...redact.model, threshold: value } });
+  };
+
+  const commitBudget = () => {
+    const parsed = Number(budgetDraft);
+    if (!Number.isFinite(parsed)) {
+      setBudgetDraft(String(redact.model.maxTokensPerRequest));
+      return;
+    }
+    const value = Math.min(
+      32768,
+      Math.max(512, Math.round(parsed / 512) * 512),
+    );
+    setBudgetDraft(String(value));
+    update({ model: { ...redact.model, maxTokensPerRequest: value } });
+  };
+
   const handlePreview = async () => {
     if (!previewInput.trim() || previewing) return;
     setPreviewing(true);
@@ -129,6 +228,32 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
     t(`settings.privacy.action${action[0].toUpperCase()}${action.slice(1)}`);
 
   const personalDisabled = !redact.enabled || !redact.personal;
+
+  const modelSizeMb = modelStatus
+    ? Math.round(modelStatus.totalBytes / 1024 / 1024)
+    : 0;
+  const modelPercent =
+    modelStatus && modelStatus.totalBytes > 0
+      ? Math.min(
+          100,
+          Math.round(
+            (modelStatus.downloadedBytes / modelStatus.totalBytes) * 100,
+          ),
+        )
+      : 0;
+  const modelStatusText = !modelStatus
+    ? t("settings.privacy.modelStatusMissing", { size: modelSizeMb })
+    : !modelStatus.supported
+      ? t("settings.privacy.modelUnsupported")
+      : modelStatus.state === "ready"
+        ? t("settings.privacy.modelStatusReady", { size: modelSizeMb })
+        : modelStatus.state === "downloading"
+          ? t("settings.privacy.modelStatusDownloading", {
+              percent: modelPercent,
+            })
+          : modelStatus.state === "error"
+            ? t("settings.privacy.modelStatusError")
+            : t("settings.privacy.modelStatusMissing", { size: modelSizeMb });
 
   return (
     <>
@@ -167,6 +292,102 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
             disabled={!redact.enabled}
             onCheckedChange={(value) => update({ failClosed: value })}
           />
+        </SettingsCard>
+      </SettingsBlock>
+
+      <SettingsBlock
+        title={t("settings.privacy.modelTitle")}
+        help={{
+          title: t("settings.privacy.modelTitle"),
+          body: t("settings.privacy.modelDescription"),
+        }}
+      >
+        <SettingsCard>
+          <SettingsSwitchRow
+            label={t("settings.privacy.modelEnabled")}
+            description={t("settings.privacy.modelEnabledDescription")}
+            checked={redact.model.enabled}
+            disabled={!redact.enabled || modelStatus?.supported === false}
+            onCheckedChange={toggleModel}
+          />
+          <div className="space-y-3 border-t border-border p-5">
+            <p className="text-caption text-fg-2">{modelStatusText}</p>
+            {modelStatus?.error && (
+              <p className="text-caption text-danger-text">
+                {modelStatus.error}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="neutral"
+                size="compact"
+                disabled={
+                  !redact.enabled ||
+                  modelStatus?.state === "downloading" ||
+                  modelStatus?.state === "ready" ||
+                  modelStatus?.supported === false
+                }
+                onClick={() => void startModelDownload()}
+              >
+                <Download className="h-3.5 w-3.5" />
+                {t("settings.privacy.modelDownload")}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="compact"
+                disabled={
+                  modelStatus?.state !== "ready" || redact.model.enabled
+                }
+                onClick={() => void deleteModel()}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {t("settings.privacy.modelDelete")}
+              </Button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1">
+                <span className="text-caption text-fg-2">
+                  {t("settings.privacy.modelThreshold")}
+                </span>
+                <Input
+                  type="number"
+                  min={0.5}
+                  max={0.99}
+                  step={0.05}
+                  value={thresholdDraft}
+                  disabled={!redact.enabled}
+                  onChange={(event) => setThresholdDraft(event.target.value)}
+                  onBlur={commitThreshold}
+                />
+                <span className="block text-caption text-fg-2">
+                  {t("settings.privacy.modelThresholdHelp")}
+                </span>
+              </label>
+              <label className="space-y-1">
+                <span className="text-caption text-fg-2">
+                  {t("settings.privacy.modelBudget")}
+                </span>
+                <Input
+                  type="number"
+                  min={512}
+                  max={32768}
+                  step={512}
+                  value={budgetDraft}
+                  disabled={!redact.enabled}
+                  onChange={(event) => setBudgetDraft(event.target.value)}
+                  onBlur={commitBudget}
+                />
+                <span className="block text-caption text-fg-2">
+                  {t("settings.privacy.modelBudgetHelp")}
+                </span>
+              </label>
+            </div>
+            <p className="text-caption text-fg-2">
+              {t("settings.privacy.modelPrivacyNote")}
+            </p>
+          </div>
         </SettingsCard>
       </SettingsBlock>
 
@@ -365,6 +586,9 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
                     hits: preview.hits,
                     placeholders: preview.placeholders,
                   })}
+                  {preview.usedModel
+                    ? ` · ${t("settings.privacy.previewUsedModel")}`
+                    : ""}
                 </span>
               )}
             </div>

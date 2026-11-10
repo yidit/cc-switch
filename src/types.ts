@@ -428,6 +428,13 @@ export interface RedactRule {
   action?: RedactAction;
 }
 
+/** 本地模型配置，与后端 `redact::ModelConfig` 一致。 */
+export interface RedactModelConfig {
+  enabled: boolean;
+  threshold: number;
+  maxTokensPerRequest: number;
+}
+
 /** 请求脱敏配置，与后端 `redact::RedactConfig` 一致。 */
 export interface RedactConfig {
   enabled: boolean;
@@ -442,11 +449,22 @@ export interface RedactConfig {
   failClosed: boolean;
   /** 生成占位符用的盐值，由后端维护，前端原样保存即可。 */
   salt?: string;
+  /** 本地模型配置。 */
+  model: RedactModelConfig;
+}
+
+/** 本地模型下载状态。 */
+export interface RedactModelStatus {
+  state: "missing" | "downloading" | "ready" | "error";
+  downloadedBytes: number;
+  totalBytes: number;
+  error: string | null;
+  directory: string;
+  supported: boolean;
 }
 
 export interface Settings {
-  // ===== 设备级 UI 设置 =====
-  // 是否在系统托盘（macOS 菜单栏）显示图标
+  // ===== 设备级 UI 设置 =====  // 是否在系统托盘（macOS 菜单栏）显示图标
   showInTray: boolean;
   // 点击关闭按钮时是否最小化到托盘而不是关闭应用
   minimizeToTrayOnClose: boolean;

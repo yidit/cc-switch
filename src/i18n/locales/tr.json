@@ -1158,7 +1158,24 @@
       "ruleRemove": "Kuralı sil",
       "actionPlaceholder": "Yer tutucu",
       "actionMask": "Maske",
-      "actionDrop": "Sil"
+      "actionDrop": "Sil",
+      "modelTitle": "Yerel model",
+      "modelDescription": "Kuralların yakalayamadığı ad ve adresleri bulmak için AstrLink Guard'ı bu makinede çalıştırır; model yalnızca etkinleştirdiğinizde indirilir.",
+      "modelEnabled": "Yerel modeli etkinleştir",
+      "modelEnabledDescription": "Ad, adres ve diğer serbest metinleri kapsar; önce model dosyalarını indirin.",
+      "modelStatusMissing": "Henüz indirilmedi (yaklaşık {{size}} MB)",
+      "modelStatusDownloading": "İndiriliyor: %{{percent}}",
+      "modelStatusReady": "Hazır (yaklaşık {{size}} MB)",
+      "modelStatusError": "İndirme başarısız oldu; yeniden deneyebilirsiniz",
+      "modelUnsupported": "Yerel model bu platformda kullanılamıyor",
+      "modelDownload": "Modeli indir",
+      "modelDelete": "Modeli sil",
+      "modelThreshold": "Güven eşiği",
+      "modelThresholdHelp": "Yükseltmek daha temkinli davranır: yanlış alarm azalır, gerçek değerler kaçabilir",
+      "modelBudget": "İstek başına çıkarım sınırı (token)",
+      "modelBudgetHelp": "En yeni içerikten geriye doğru sayılır; sınırı aşan kısım yalnızca kurallarla işlenir",
+      "modelPrivacyNote": "Model ve ONNX Runtime yaklaşık 50 MB'dir (platforma göre değişir); ilk kullanımda indirilip SHA-256 ile doğrulanır, çıkarım bu makinede kalır.",
+      "previewUsedModel": "yerel model dahil"
     },
     "appConfig": {
       "configDir": "Yapılandırma dizini"

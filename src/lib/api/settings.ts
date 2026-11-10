@@ -4,6 +4,7 @@ import type {
   WebDavSyncSettings,
   S3SyncSettings,
   RemoteSnapshotInfo,
+  RedactModelStatus,
 } from "@/types";
 import type { AppId } from "./types";
 
@@ -83,8 +84,24 @@ export const settingsApi = {
     hits: number;
     placeholders: number;
     errors: string[];
+    usedModel: boolean;
   }> {
     return await invoke("preview_redaction", { text });
+  },
+
+  /** 本地脱敏模型的下载/安装状态。 */
+  async getRedactModelStatus(): Promise<RedactModelStatus> {
+    return await invoke("redact_model_status");
+  },
+
+  /** 后台下载本地模型与运行时，进度通过状态接口轮询。 */
+  async downloadRedactModel(): Promise<void> {
+    await invoke("download_redact_model");
+  },
+
+  /** 删除已下载的本地模型。 */
+  async deleteRedactModel(): Promise<void> {
+    await invoke("delete_redact_model");
   },
 
   async getConfigDir(appId: AppId): Promise<string> {

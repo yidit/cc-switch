@@ -1191,7 +1191,24 @@
       "ruleRemove": "ルールを削除",
       "actionPlaceholder": "プレースホルダー",
       "actionMask": "マスク",
-      "actionDrop": "削除"
+      "actionDrop": "削除",
+      "modelTitle": "ローカルモデル",
+      "modelDescription": "AstrLink Guard をこの端末で動かし、ルールでは拾えない人名や住所を検出します。モデルは有効にしたときだけダウンロードします。",
+      "modelEnabled": "ローカルモデルを有効化",
+      "modelEnabledDescription": "人名・住所などの自由文を補完します。先にモデルファイルをダウンロードしてください。",
+      "modelStatusMissing": "未ダウンロード（約 {{size}} MB）",
+      "modelStatusDownloading": "ダウンロード中：{{percent}}%",
+      "modelStatusReady": "準備完了（約 {{size}} MB）",
+      "modelStatusError": "ダウンロードに失敗しました。再試行できます",
+      "modelUnsupported": "このプラットフォームではローカルモデルを利用できません",
+      "modelDownload": "モデルをダウンロード",
+      "modelDelete": "モデルを削除",
+      "modelThreshold": "信頼度のしきい値",
+      "modelThresholdHelp": "高くすると保守的になり、誤検出は減りますが実データを取り逃がす可能性があります",
+      "modelBudget": "1 リクエストあたりの推論上限（トークン）",
+      "modelBudgetHelp": "新しい内容から遡って計算し、超えた部分はルールのみで処理します",
+      "modelPrivacyNote": "モデルと ONNX Runtime は約 50 MB（プラットフォームにより多少異なります）。初回有効時にダウンロードして SHA-256 を検証し、推論はすべてこの端末で行います。",
+      "previewUsedModel": "ローカルモデル使用"
     },
     "appConfig": {
       "configDir": "設定ディレクトリ"
