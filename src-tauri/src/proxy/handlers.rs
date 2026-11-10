@@ -58,7 +58,10 @@ use subtle::ConstantTimeEq;
 /// 对请求体应用脱敏，并把占位符映射记录到上下文。
 ///
 /// `failClosed` 开启且配置不可用时返回错误，调用方应中止请求、不把原文发给上游。
-fn apply_request_redaction(body: &mut Value, ctx: &mut RequestContext) -> Result<(), ProxyError> {
+async fn apply_request_redaction(
+    body: &mut Value,
+    ctx: &mut RequestContext,
+) -> Result<(), ProxyError> {
     let config = crate::settings::redact_config();
     if !config.enabled {
         return Ok(());
@@ -68,6 +71,23 @@ fn apply_request_redaction(body: &mut Value, ctx: &mut RequestContext) -> Result
     // 只有开启脱敏时才计算，未开启的请求没有额外开销。
     if ctx.conversation_fingerprint.is_none() {
         ctx.conversation_fingerprint = crate::proxy::forwarder::conversation_fingerprint(body);
+    }
+
+    // 本地模型推理是 CPU 密集操作，放到阻塞线程里执行，避免占住异步运行时。
+    if config.model.enabled {
+        let mut owned = body.clone();
+        let (masked, result) = tokio::task::spawn_blocking(move || {
+            let result = crate::redact::proxy::mask_request_body(&mut owned, &config);
+            (owned, result)
+        })
+        .await
+        .map_err(|error| ProxyError::Internal(format!("脱敏任务失败：{error}")))?;
+
+        *body = masked;
+        if let Some(table) = result? {
+            ctx.redaction = Some(table);
+        }
+        return Ok(());
     }
 
     match crate::redact::proxy::mask_request_body(body, &config) {
@@ -382,7 +402,7 @@ async fn handle_messages_for_app(
     .await?;
 
     // 请求体在最终发送前脱敏；占位符映射随 ctx 交给响应处理还原。
-    apply_request_redaction(&mut body, &mut ctx)?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
 
     let raw_endpoint = uri
         .path_and_query()
@@ -1037,7 +1057,7 @@ pub async fn handle_chat_completions(
         stack,
     )
     .await?;
-    apply_request_redaction(&mut body, &mut ctx)?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
 
     let is_stream = body
@@ -1160,7 +1180,7 @@ async fn handle_responses_for_app(
         stack,
     )
     .await?;
-    apply_request_redaction(&mut body, &mut ctx)?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
     let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body
@@ -1429,7 +1449,7 @@ async fn handle_codex_standalone_passthrough(
         None,
     )
     .await?;
-    apply_request_redaction(&mut body, &mut ctx)?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
     let endpoint = endpoint_with_query(&uri, canonical_endpoint);
 
     let forwarder = ctx.create_forwarder(&state);
@@ -1523,7 +1543,7 @@ async fn handle_responses_compact_for_app(
         stack,
     )
     .await?;
-    apply_request_redaction(&mut body, &mut ctx)?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
 
     let is_stream = body
@@ -2687,7 +2707,7 @@ pub async fn handle_gemini(
     .await?
     .with_model_from_uri(&uri);
 
-    apply_request_redaction(&mut body, &mut ctx)?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
 
     // 提取完整的路径和查询参数
     let endpoint = uri

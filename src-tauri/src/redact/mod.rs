@@ -1,7 +1,8 @@
 //! 请求/响应脱敏引擎。
 //!
 //! 设计参考 magpie（MIT）的 `internal/redact`，但按 CC Switch 的需要重写。
-//! 第一阶段只实现规则层，不引入本地 PII 模型。范围见 `docs/redact/scope.md`。
+//! 规则层始终可用；本地模型（AstrLink Guard）是可选补充，默认关闭。
+//! 范围见 `docs/redact/scope.md`。
 //!
 //! 数据流：
 //! - 请求：在最终发送上游前把文本字段中的敏感值替换为占位符；
@@ -9,6 +10,8 @@
 
 pub mod detectors;
 pub mod json;
+pub mod model;
+pub mod model_store;
 pub mod placeholder;
 pub mod proxy;
 pub mod types;
@@ -19,8 +22,9 @@ use detectors::{
 
 pub use detectors::rules::invalid_rules;
 pub use json::{mask_json, restore_json, JsonMaskStats};
+pub use model::ModelEngine;
 pub use placeholder::PlaceholderTable;
-pub use types::{Action, CustomRule, Hit, Kind, MaskOutcome, RedactConfig};
+pub use types::{Action, CustomRule, Hit, Kind, MaskOutcome, ModelConfig, RedactConfig};
 
 /// 检测器：在文本中找出需要脱敏的字节区间。
 ///
@@ -80,6 +84,19 @@ impl Engine {
         config: &RedactConfig,
         table: &mut PlaceholderTable,
     ) -> MaskOutcome {
+        self.mask_text_with(text, config, table, &[])
+    }
+
+    /// 同上，但额外合并一批外部命中（目前来自本地模型）。
+    ///
+    /// `extra` 的区间必须落在字符边界上；越界或重叠的区间会被统一裁剪。
+    pub fn mask_text_with(
+        &self,
+        text: &str,
+        config: &RedactConfig,
+        table: &mut PlaceholderTable,
+        extra: &[Hit],
+    ) -> MaskOutcome {
         if !config.enabled {
             return MaskOutcome {
                 text: text.to_string(),
@@ -88,7 +105,7 @@ impl Engine {
             };
         }
 
-        let hits = self.collect_hits(text, config);
+        let hits = self.collect_hits(text, config, extra);
         if hits.is_empty() {
             return MaskOutcome {
                 text: text.to_string(),
@@ -125,11 +142,12 @@ impl Engine {
     /// 收集所有检测器的结果，排序并丢弃重叠区间。
     ///
     /// 重叠时保留起点更早（同起点则更长）的区间；被它覆盖的短区间会被丢弃。
-    fn collect_hits(&self, text: &str, config: &RedactConfig) -> Vec<Hit> {
+    fn collect_hits(&self, text: &str, config: &RedactConfig, extra: &[Hit]) -> Vec<Hit> {
         let mut all = Vec::new();
         for detector in &self.detectors {
             all.extend(detector.detect(text, config));
         }
+        all.extend(extra.iter().copied());
 
         all.retain(|hit| hit.start < hit.end && hit.end <= text.len());
         // 白名单按原值精确匹配，对内置检测器与自定义词/规则一律生效。

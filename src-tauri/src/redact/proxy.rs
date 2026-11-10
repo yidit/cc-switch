@@ -37,9 +37,26 @@ pub fn mask_request_body(
     }
 
     let engine = Engine::with_builtin(config);
+
+    // 本地模型：启用但文件不可用时，按 failClosed 决定拒绝还是退回规则层。
+    let model = if config.model.enabled {
+        match crate::redact::model::load_engine() {
+            Ok(model) => Some(model),
+            Err(error) => {
+                if config.fail_closed {
+                    return Err(format!("本地脱敏模型不可用：{error}"));
+                }
+                log::warn!("本地脱敏模型不可用，本次只使用规则层：{error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // 配置了盐值时按盐值计算占位符，不同请求之间保持一致；旧配置没有盐值时，每次请求随机。
     let mut table = PlaceholderTable::from_config(config);
-    let stats = mask_json(body, &engine, config, &mut table);
+    let stats = mask_json(body, &engine, config, &mut table, model.as_deref());
 
     if stats.placeholders == 0 && stats.hits == 0 {
         return Ok(None);

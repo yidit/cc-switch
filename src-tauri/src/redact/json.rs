@@ -3,9 +3,11 @@
 //! 只处理字符串值，键名与结构化枚举字段保持原样。调用方负责解析与序列化
 //! JSON；本模块直接操作 `serde_json::Value`，避免在代理链路里重复实现。
 
+use std::collections::HashMap;
+
 use serde_json::Value;
 
-use crate::redact::{Engine, PlaceholderTable, RedactConfig};
+use crate::redact::{Engine, Hit, ModelEngine, PlaceholderTable, RedactConfig};
 
 /// 这些键的值是协议枚举或标识符，不参与脱敏。
 const SKIP_KEYS: &[&str] = &[
@@ -44,20 +46,76 @@ pub struct JsonMaskStats {
 }
 
 /// 递归脱敏 `value` 中的字符串，返回统计。
+///
+/// 传入 `model` 时会先用模型扫描一遍文本：扫描从最新内容往前进行，
+/// 受 `config.model.max_tokens_per_request` 限制，结果再与规则命中合并。
 pub fn mask_json(
     value: &mut Value,
     engine: &Engine,
     config: &RedactConfig,
     table: &mut PlaceholderTable,
+    model: Option<&ModelEngine>,
 ) -> JsonMaskStats {
     let mut stats = JsonMaskStats::default();
     if !config.enabled {
         return stats;
     }
-    walk_mask(value, None, engine, config, table, &mut stats);
+
+    let model_hits = match model {
+        Some(model) if config.model.enabled => {
+            let mut texts = Vec::new();
+            collect_strings(value, None, &mut texts);
+
+            // 倒序遍历：预算优先给最新的消息。
+            let mut budget = config.model.max_tokens_per_request;
+            let mut hits: HashMap<usize, Vec<Hit>> = HashMap::new();
+            for (index, text) in texts.iter().enumerate().rev() {
+                if budget == 0 {
+                    break;
+                }
+                let found = model.detect(text, config, &mut budget);
+                if !found.is_empty() {
+                    hits.insert(index, found);
+                }
+            }
+            Some(hits)
+        }
+        _ => None,
+    };
+
+    let mut index = 0usize;
+    walk_mask(
+        value,
+        None,
+        engine,
+        config,
+        table,
+        &mut stats,
+        model_hits.as_ref(),
+        &mut index,
+    );
     stats
 }
 
+fn collect_strings(value: &Value, key: Option<&str>, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) if !key.is_some_and(should_skip) => out.push(text.clone()),
+        Value::String(_) => {}
+        Value::Array(items) => {
+            for item in items {
+                collect_strings(item, key, out);
+            }
+        }
+        Value::Object(map) => {
+            for (child_key, child) in map {
+                collect_strings(child, Some(child_key), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn walk_mask(
     value: &mut Value,
     key: Option<&str>,
@@ -65,13 +123,22 @@ fn walk_mask(
     config: &RedactConfig,
     table: &mut PlaceholderTable,
     stats: &mut JsonMaskStats,
+    model_hits: Option<&HashMap<usize, Vec<Hit>>>,
+    index: &mut usize,
 ) {
     match value {
         Value::String(text) => {
             if key.is_some_and(should_skip) {
                 return;
             }
-            let outcome = engine.mask_text(text, config, table);
+            let current = *index;
+            *index += 1;
+            let extra = model_hits
+                .and_then(|hits| hits.get(&current))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+
+            let outcome = engine.mask_text_with(text, config, table, extra);
             *text = outcome.text;
             stats.strings += 1;
             stats.hits += outcome.hits.len();
@@ -79,12 +146,21 @@ fn walk_mask(
         }
         Value::Array(items) => {
             for item in items {
-                walk_mask(item, key, engine, config, table, stats);
+                walk_mask(item, key, engine, config, table, stats, model_hits, index);
             }
         }
         Value::Object(map) => {
             for (child_key, child) in map.iter_mut() {
-                walk_mask(child, Some(child_key), engine, config, table, stats);
+                walk_mask(
+                    child,
+                    Some(child_key),
+                    engine,
+                    config,
+                    table,
+                    stats,
+                    model_hits,
+                    index,
+                );
             }
         }
         _ => {}
@@ -152,7 +228,7 @@ mod tests {
             ]
         });
 
-        let stats = mask_json(&mut value, &engine, &config, &mut table);
+        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
 
         assert_eq!(stats.hits, 2);
         assert!(value["content"][0]["text"]
@@ -177,7 +253,7 @@ mod tests {
         });
         let mut value = original.clone();
 
-        mask_json(&mut value, &engine, &config, &mut table);
+        mask_json(&mut value, &engine, &config, &mut table, None);
         let restored_count = restore_json(&mut value, &table);
 
         assert_eq!(restored_count, 2);
@@ -191,7 +267,7 @@ mod tests {
         // 即使值看起来像密钥，结构化字段也不处理。
         let mut value = json!({"type": "sk-proj-Qm7vT2xLk9RbW4nZpE6sJc8YhD3fGa5uKiN1oVr0"});
 
-        let stats = mask_json(&mut value, &engine, &config, &mut table);
+        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
 
         assert_eq!(stats.strings, 0);
         assert!(value["type"].as_str().unwrap().starts_with("sk-proj-"));
@@ -205,7 +281,7 @@ mod tests {
         let original = json!({"text": "mail jane.smith@gmail.com"});
         let mut value = original.clone();
 
-        let stats = mask_json(&mut value, &engine, &config, &mut table);
+        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
 
         assert_eq!(stats, JsonMaskStats::default());
         assert_eq!(value, original);

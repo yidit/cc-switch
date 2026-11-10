@@ -23,6 +23,11 @@ function makeConfig(overrides: Partial<RedactConfig> = {}): RedactConfig {
     rules: [],
     allow: [],
     failClosed: true,
+    model: {
+      enabled: false,
+      threshold: 0.8,
+      maxTokensPerRequest: 4096,
+    },
     ...overrides,
   };
 }

@@ -81,6 +81,42 @@ pub struct CustomRule {
     pub action: Action,
 }
 
+/// 本地模型配置。
+///
+/// 模型用于识别规则层无法可靠判断的人名和地址；默认关闭，需要用户显式
+/// 下载并启用。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfig {
+    /// 是否启用本地模型。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 命中阈值：模型给出的置信度达到该值才脱敏。
+    #[serde(default = "default_model_threshold")]
+    pub threshold: f32,
+    /// 每次请求最多交给模型的 token 数，从最新的内容往前算。
+    #[serde(default = "default_model_max_tokens")]
+    pub max_tokens_per_request: usize,
+}
+
+fn default_model_threshold() -> f32 {
+    0.8
+}
+
+fn default_model_max_tokens() -> usize {
+    4096
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_model_threshold(),
+            max_tokens_per_request: default_model_max_tokens(),
+        }
+    }
+}
+
 /// 脱敏配置。
 ///
 /// `kinds` 为空时，表示 `personal` 覆盖全部个人信息类型。
@@ -124,6 +160,9 @@ pub struct RedactConfig {
     /// 请求都会重新随机。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub salt: Option<String>,
+    /// 本地模型配置。
+    #[serde(default)]
+    pub model: ModelConfig,
 }
 
 fn default_true() -> bool {
@@ -144,6 +183,7 @@ impl Default for RedactConfig {
             allow: Vec::new(),
             fail_closed: true,
             salt: None,
+            model: ModelConfig::default(),
         }
     }
 }
