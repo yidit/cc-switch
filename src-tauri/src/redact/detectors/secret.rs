@@ -78,8 +78,8 @@ fn rules() -> &'static [Rule] {
                 0,
                 looks_like_key,
             ),
-            // Google API key。
-            Rule::new(r"AIza[0-9A-Za-z_-]{35}", 0, always),
+            // Google API key（前缀后至少 35 位，实际长度可能更长）。
+            Rule::new(r"AIza[0-9A-Za-z_-]{35,}", 0, always),
             // Slack token。
             Rule::new(r"xox[abposr]-[0-9A-Za-z-]{10,}", 0, always),
             // AWS access key id。

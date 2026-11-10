@@ -31,9 +31,23 @@ impl Detector for PhoneDetector {
                 });
             }
         }
-        hits.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
+        // 长区间排在前面，便于下面剔除被它包含的短匹配。
+        hits.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
         hits.dedup();
-        hits
+
+        // 同一条号码会被多个正则命中（如 `415-555-0132` 里还包含
+        // `555-0132`），只保留最长的那个。
+        let mut kept: Vec<Hit> = Vec::with_capacity(hits.len());
+        for hit in hits {
+            if kept
+                .last()
+                .is_some_and(|last| hit.start >= last.start && hit.end <= last.end)
+            {
+                continue;
+            }
+            kept.push(hit);
+        }
+        kept
     }
 }
 
