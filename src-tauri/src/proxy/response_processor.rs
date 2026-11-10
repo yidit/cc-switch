@@ -200,13 +200,14 @@ pub async fn handle_streaming(
     // 获取流式超时配置
     let timeout_config = ctx.streaming_timeout_config();
 
-    // 创建带日志和超时的透传流
-    let logged_stream = create_logged_passthrough_stream(
+    // 创建带日志和超时的透传流；脱敏开启时在写回客户端前还原占位符。
+    let logged_stream = create_logged_passthrough_stream_with_redaction(
         stream,
         ctx.tag,
         usage_collector,
         timeout_config,
         connection_guard,
+        ctx.redaction.clone(),
     );
 
     let body = axum::body::Body::from_stream(logged_stream);
@@ -238,6 +239,18 @@ pub async fn handle_non_streaming(
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
     strip_hop_by_hop_response_headers(&mut response_headers);
+
+    // 脱敏开启时先把占位符还原成原值；长度可能变化，需要重建实体头。
+    let body_bytes = match &ctx.redaction {
+        Some(table) => match crate::redact::proxy::restore_response_body(&body_bytes, table) {
+            Some(restored) => {
+                strip_entity_headers_for_rebuilt_body(&mut response_headers);
+                Bytes::from(restored)
+            }
+            None => body_bytes,
+        },
+        None => body_bytes,
+    };
 
     log::debug!(
         "[{}] 上游响应体已接收: bytes={} (content omitted)",
@@ -735,8 +748,28 @@ pub fn create_logged_passthrough_stream(
     timeout_config: StreamingTimeoutConfig,
     connection_guard: Option<ActiveConnectionGuard>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    create_logged_passthrough_stream_with_redaction(
+        stream,
+        tag,
+        usage_collector,
+        timeout_config,
+        connection_guard,
+        None,
+    )
+}
+
+/// 同上，并在写回客户端前还原脱敏占位符。
+pub fn create_logged_passthrough_stream_with_redaction(
+    stream: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
+    tag: &'static str,
+    usage_collector: Option<SseUsageCollector>,
+    timeout_config: StreamingTimeoutConfig,
+    connection_guard: Option<ActiveConnectionGuard>,
+    redaction: Option<std::sync::Arc<crate::redact::PlaceholderTable>>,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let _conn_guard = connection_guard;
+        let mut pending_restore: Vec<u8> = Vec::new();
         let mut sse = SseBuffer::new();
         let mut collector = usage_collector;
         let mut finish_guard = collector.clone().map(SseUsageFinishGuard::new);
@@ -833,7 +866,26 @@ pub fn create_logged_passthrough_stream(
                         }
                     }
 
-                    yield Ok(bytes);
+                    let chunk = match &redaction {
+                        Some(table) => {
+                            let restored = crate::redact::proxy::restore_stream_chunk(
+                                table,
+                                &mut pending_restore,
+                                &bytes,
+                            );
+                            if restored.is_empty() {
+                                // 整个 chunk 都是不完整占位符，等下一个 chunk。
+                                None
+                            } else {
+                                Some(Bytes::from(restored))
+                            }
+                        }
+                        None => Some(bytes),
+                    };
+
+                    if let Some(bytes) = chunk {
+                        yield Ok(bytes);
+                    }
                 }
                 Some(Err(e)) => {
                     log::error!("[{tag}] 流错误: {e}");
@@ -843,6 +895,16 @@ pub fn create_logged_passthrough_stream(
                 None => {
                     // 流正常结束
                     break;
+                }
+            }
+        }
+
+        if let Some(table) = &redaction {
+            if let Some(rest) =
+                crate::redact::proxy::flush_stream_restore(table, &mut pending_restore)
+            {
+                if !rest.is_empty() {
+                    yield Ok(Bytes::from(rest));
                 }
             }
         }

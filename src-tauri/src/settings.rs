@@ -701,6 +701,11 @@ pub struct AppSettings {
     // ===== 本机自动迁移状态 =====
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_migrations: Option<LocalMigrations>,
+
+    // ===== 请求脱敏（仅影响经本地代理的请求） =====
+    /// `None` 表示前端尚未提供该字段（保留现有配置），`Some` 表示用户显式保存。
+    #[serde(default)]
+    pub redact: Option<crate::redact::RedactConfig>,
 }
 
 fn default_show_in_tray() -> bool {
@@ -790,6 +795,7 @@ impl Default for AppSettings {
             backup_retain_count: None,
             preferred_terminal: None,
             local_migrations: None,
+            redact: None,
         }
     }
 }
@@ -1138,6 +1144,11 @@ pub fn get_settings() -> AppSettings {
             e.into_inner()
         })
         .clone()
+}
+
+/// 当前生效的请求脱敏配置（未设置时为默认关闭）。
+pub fn redact_config() -> crate::redact::RedactConfig {
+    get_settings().redact.clone().unwrap_or_default()
 }
 
 pub fn get_settings_for_frontend() -> AppSettings {

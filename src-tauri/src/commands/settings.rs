@@ -56,6 +56,11 @@ fn merge_settings_for_save(
     incoming.proxy_client_host = existing.proxy_client_host.clone();
     // 轻量模式状态只由进入 / 退出轻量模式时写，前端缓存里的值总是旧的。
     incoming.lightweight_mode = existing.lightweight_mode;
+    // 脱敏配置在 Phase 3 之前没有前端编辑器：前端全量保存不带该字段时保留现有值。
+    // `Some` 表示用户显式保存（包括关闭），`None` 表示未提供。
+    if incoming.redact.is_none() {
+        incoming.redact = existing.redact.clone();
+    }
     incoming
 }
 

@@ -73,6 +73,8 @@ pub struct RequestContext {
     pub copilot_optimizer_config: CopilotOptimizerConfig,
     /// Stack 模型的请求（`mode::stack`）：直达 Stack 里的那一家，不读也不写任何路由状态。
     pub is_stack: bool,
+    /// 请求脱敏的占位符映射；响应写出前据此还原。未开启或未命中时为 `None`。
+    pub redaction: Option<std::sync::Arc<crate::redact::PlaceholderTable>>,
 }
 
 impl RequestContext {
@@ -226,6 +228,7 @@ impl RequestContext {
             optimizer_config,
             copilot_optimizer_config,
             is_stack,
+            redaction: None,
         })
     }
 
