@@ -31,13 +31,15 @@ export function isKindEnabled(
   config: RedactConfig,
   kind: PersonalKind,
 ): boolean {
+  if (!config.personal) return false;
   return config.kinds.length === 0 || config.kinds.includes(kind);
 }
 
 /**
  * 切换某个个人信息类型。
  *
- * 全选时写回空数组，与后端「空 = 全部」的语义保持一致。
+ * 后端用「空数组 = 全部类型」，因此全部关闭时不能只写空数组，
+ * 需要同时把 `personal` 关掉；重新打开任意类型时再打开 `personal`。
  */
 export function withKindEnabled(
   config: RedactConfig,
@@ -45,9 +47,11 @@ export function withKindEnabled(
   enabled: boolean,
 ): RedactConfig {
   const selected = new Set<PersonalKind>(
-    config.kinds.length === 0
-      ? [...PERSONAL_KINDS]
-      : config.kinds.filter(isPersonalKind),
+    config.personal
+      ? config.kinds.length === 0
+        ? [...PERSONAL_KINDS]
+        : config.kinds.filter(isPersonalKind)
+      : [],
   );
 
   if (enabled) {
@@ -56,9 +60,14 @@ export function withKindEnabled(
     selected.delete(kind);
   }
 
+  if (!enabled && selected.size === 0) {
+    return { ...config, personal: false, kinds: [] };
+  }
+
   const kinds = PERSONAL_KINDS.filter((item) => selected.has(item));
   return {
     ...config,
+    personal: true,
     kinds: kinds.length === PERSONAL_KINDS.length ? [] : [...kinds],
   };
 }

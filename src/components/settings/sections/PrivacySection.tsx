@@ -147,6 +147,15 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
     );
   };
 
+  // 下拉选项没有失焦事件，改动后立即保存。
+  const commitRule = (index: number, patch: Partial<RedactRule>) => {
+    commitRules(
+      ruleDrafts.map((rule, itemIndex) =>
+        itemIndex === index ? { ...rule, ...patch } : rule,
+      ),
+    );
+  };
+
   const addRule = () => {
     commitRules([...ruleDrafts, createRule(redact)]);
   };
@@ -492,7 +501,7 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
                   value={rule.kind}
                   disabled={!redact.enabled}
                   onValueChange={(value) =>
-                    patchRule(index, { kind: value as RedactKind })
+                    commitRule(index, { kind: value as RedactKind })
                   }
                 >
                   <SelectTrigger className="w-[130px]">
@@ -510,7 +519,7 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
                   value={rule.action ?? "placeholder"}
                   disabled={!redact.enabled}
                   onValueChange={(value) =>
-                    patchRule(index, { action: value as RedactAction })
+                    commitRule(index, { action: value as RedactAction })
                   }
                 >
                   <SelectTrigger className="w-[150px]">

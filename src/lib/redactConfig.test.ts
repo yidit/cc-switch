@@ -63,6 +63,24 @@ describe("个人信息类型开关", () => {
     expect(enabled.kinds).toEqual([]);
   });
 
+  it("关闭最后一个类型时同时关闭个人信息开关", () => {
+    const withoutPhone = withKindEnabled(makeConfig(), "PHONE", false);
+    const onlyEmail = withKindEnabled(withoutPhone, "ACCOUNT", false);
+    const none = withKindEnabled(onlyEmail, "EMAIL", false);
+
+    expect(none.personal).toBe(false);
+    expect(none.kinds).toEqual([]);
+    expect(isKindEnabled(none, "EMAIL")).toBe(false);
+  });
+
+  it("重新打开类型会同时打开个人信息开关", () => {
+    const off = { ...makeConfig(), personal: false };
+    const on = withKindEnabled(off, "PHONE", true);
+
+    expect(on.personal).toBe(true);
+    expect(on.kinds).toEqual(["PHONE"]);
+  });
+
   it("不修改传入的配置", () => {
     const config = makeConfig();
     withKindEnabled(config, "EMAIL", false);
