@@ -84,7 +84,7 @@ async fn apply_request_redaction(
         .map_err(|error| ProxyError::Internal(format!("脱敏任务失败：{error}")))?;
 
         *body = masked;
-        if let Some(table) = result? {
+        if let Some(table) = result.map_err(ProxyError::Internal)? {
             ctx.redaction = Some(table);
         }
         return Ok(());
