@@ -410,6 +410,38 @@ export interface FetchedExchangeRates {
 
 // 应用设置类型（用于设置对话框与 Tauri API）
 // 存储在本地 ~/.cc-switch/settings.json，不随数据库同步
+/** 脱敏敏感值类型，与后端 `redact::Kind` 一致。 */
+export type RedactKind =
+  | "SECRET"
+  | "PERSON"
+  | "PHONE"
+  | "EMAIL"
+  | "ACCOUNT"
+  | "ADDRESS";
+
+export type RedactAction = "placeholder" | "mask" | "drop";
+
+export interface RedactRule {
+  name: string;
+  pattern: string;
+  kind: RedactKind;
+  action?: RedactAction;
+}
+
+/** 请求脱敏配置，与后端 `redact::RedactConfig` 一致。 */
+export interface RedactConfig {
+  enabled: boolean;
+  secrets: boolean;
+  personal: boolean;
+  kinds: RedactKind[];
+  words: string[];
+  wordsAnyCase: boolean;
+  wordsWhole: boolean;
+  rules: RedactRule[];
+  allow: string[];
+  failClosed: boolean;
+}
+
 export interface Settings {
   // ===== 设备级 UI 设置 =====
   // 是否在系统托盘（macOS 菜单栏）显示图标
@@ -564,6 +596,9 @@ export interface Settings {
       migratedStateRows?: number;
     };
   };
+
+  // ===== 请求脱敏（仅影响经本地代理的请求） =====
+  redact?: RedactConfig;
 }
 
 /** 原文 UTF-16 坐标，左闭右开；不得切开代理对。 */

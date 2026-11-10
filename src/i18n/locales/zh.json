@@ -1148,8 +1148,31 @@
       "appConfig": "应用配置",
       "routing": "本地路由",
       "network": "网络",
+      "privacy": "隐私",
       "data": "数据",
       "about": "关于"
+    },
+    "privacy": {
+      "title": "请求脱敏",
+      "description": "在请求发往上游前替换敏感信息，收到回复后自动还原。只处理经过 CC Switch 本地代理的请求。",
+      "enabled": "启用请求脱敏",
+      "enabledDescription": "关闭时不会修改任何请求与响应。",
+      "secrets": "脱敏密钥与凭据",
+      "secretsDescription": "API key、JWT、连接串密码、环境变量中的密钥等。",
+      "personal": "脱敏个人信息",
+      "personalDescription": "邮箱、电话号码、银行卡、IBAN、身份证号等。",
+      "wordsTitle": "自定义词与白名单",
+      "wordsDescription": "自定义屏蔽词按行填写；白名单中的值永远不会被脱敏。",
+      "wordsLabel": "自定义屏蔽词",
+      "wordsPlaceholder": "每行一个，例如：\n内部项目名\n客户名称",
+      "allowLabel": "白名单",
+      "allowPlaceholder": "每行一个；命中的值保持原样",
+      "previewTitle": "预览",
+      "previewDescription": "用当前配置试跑一段文本（总是按已开启处理）。",
+      "previewPlaceholder": "粘贴一段包含邮箱、电话或密钥的文本…",
+      "previewButton": "预览",
+      "previewHits": "命中 {{hits}} 处，生成 {{placeholders}} 个占位符",
+      "proxyOnly": "提示：只有经过 CC Switch 本地代理的请求会被脱敏，直连 provider 的流量不受影响。"
     },
     "appConfig": {
       "configDir": "配置目录"

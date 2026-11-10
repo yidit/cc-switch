@@ -1115,8 +1115,31 @@
       "appConfig": "Uygulama yapılandırması",
       "routing": "Yerel yönlendirme",
       "network": "Ağ",
+      "privacy": "Gizlilik",
       "data": "Veri",
       "about": "Hakkında"
+    },
+    "privacy": {
+      "title": "İstek gizleme",
+      "description": "Hassas değerleri istekler üst sunucuya gitmeden önce değiştirir ve yanıtlarda geri yükler. Yalnızca CC Switch yerel proxy'sinden geçen istekler işlenir.",
+      "enabled": "İstek gizlemeyi etkinleştir",
+      "enabledDescription": "Kapalıyken istekler ve yanıtlar değiştirilmez.",
+      "secrets": "Sırları ve kimlik bilgilerini gizle",
+      "secretsDescription": "API anahtarları, JWT'ler, bağlantı dizesi parolaları ve ortam değişkenlerindeki sırlar.",
+      "personal": "Kişisel verileri gizle",
+      "personalDescription": "E-postalar, telefon numaraları, banka kartları, IBAN'lar ve kimlik numaraları.",
+      "wordsTitle": "Özel sözcükler ve izin listesi",
+      "wordsDescription": "Her satıra bir özel sözcük; izin listesindeki değerler asla gizlenmez.",
+      "wordsLabel": "Gizlenecek özel sözcükler",
+      "wordsPlaceholder": "Her satıra bir tane, örn.:\nŞirket içi proje\nMüşteri adı",
+      "allowLabel": "İzin listesi",
+      "allowPlaceholder": "Her satıra bir tane; eşleşen değerler olduğu gibi kalır",
+      "previewTitle": "Önizleme",
+      "previewDescription": "Geçerli yapılandırmayı bir metin üzerinde deneyin (her zaman etkin kabul edilir).",
+      "previewPlaceholder": "E-posta, telefon numarası veya anahtar içeren bir metin yapıştırın…",
+      "previewButton": "Önizleme",
+      "previewHits": "{{hits}} eşleşme, {{placeholders}} yer tutucu",
+      "proxyOnly": "Not: yalnızca CC Switch yerel proxy'sinden geçen istekler gizlenir; doğrudan sağlayıcı trafiği etkilenmez."
     },
     "appConfig": {
       "configDir": "Yapılandırma dizini"

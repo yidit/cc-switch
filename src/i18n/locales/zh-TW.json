@@ -1149,8 +1149,31 @@
       "appConfig": "應用設定",
       "routing": "本地路由",
       "network": "網路",
+      "privacy": "隱私",
       "data": "資料",
       "about": "關於"
+    },
+    "privacy": {
+      "title": "請求脫敏",
+      "description": "在請求送往上游前替換敏感資訊，收到回覆後自動還原。只處理經過 CC Switch 本機代理的請求。",
+      "enabled": "啟用請求脫敏",
+      "enabledDescription": "關閉時不會修改任何請求與回應。",
+      "secrets": "脫敏金鑰與憑證",
+      "secretsDescription": "API key、JWT、連線字串密碼、環境變數中的金鑰等。",
+      "personal": "脫敏個人資訊",
+      "personalDescription": "電子郵件、電話號碼、金融卡、IBAN、身分證號碼等。",
+      "wordsTitle": "自訂詞與白名單",
+      "wordsDescription": "自訂封鎖詞每行一個；白名單中的值永遠不會被脫敏。",
+      "wordsLabel": "自訂封鎖詞",
+      "wordsPlaceholder": "每行一個，例如：\n內部專案名\n客戶名稱",
+      "allowLabel": "白名單",
+      "allowPlaceholder": "每行一個；命中的值保持原樣",
+      "previewTitle": "預覽",
+      "previewDescription": "用目前設定試跑一段文字（一律視為已啟用）。",
+      "previewPlaceholder": "貼上一段包含電子郵件、電話或金鑰的文字…",
+      "previewButton": "預覽",
+      "previewHits": "命中 {{hits}} 處，產生 {{placeholders}} 個佔位符",
+      "proxyOnly": "提示：只有經過 CC Switch 本機代理的請求會被脫敏，直連 provider 的流量不受影響。"
     },
     "appConfig": {
       "configDir": "設定目錄"

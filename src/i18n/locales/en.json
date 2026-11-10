@@ -1148,8 +1148,31 @@
       "appConfig": "App config",
       "routing": "Local routing",
       "network": "Network",
+      "privacy": "Privacy",
       "data": "Data",
       "about": "About"
+    },
+    "privacy": {
+      "title": "Request redaction",
+      "description": "Replace sensitive values before requests reach upstream and restore them in replies. Only requests through CC Switch's local proxy are handled.",
+      "enabled": "Enable request redaction",
+      "enabledDescription": "When off, requests and responses are left untouched.",
+      "secrets": "Redact secrets and credentials",
+      "secretsDescription": "API keys, JWTs, connection-string passwords, and secrets in environment variables.",
+      "personal": "Redact personal data",
+      "personalDescription": "Emails, phone numbers, bank cards, IBANs, and national ID numbers.",
+      "wordsTitle": "Custom words and allow list",
+      "wordsDescription": "One custom word per line; values in the allow list are never masked.",
+      "wordsLabel": "Custom masked words",
+      "wordsPlaceholder": "One per line, e.g.:\nInternal project\nCustomer name",
+      "allowLabel": "Allow list",
+      "allowPlaceholder": "One per line; matching values stay as written",
+      "previewTitle": "Preview",
+      "previewDescription": "Try the current configuration on a piece of text (always treated as enabled).",
+      "previewPlaceholder": "Paste text containing an email, phone number, or key…",
+      "previewButton": "Preview",
+      "previewHits": "{{hits}} hits, {{placeholders}} placeholders",
+      "proxyOnly": "Note: only requests through CC Switch's local proxy are redacted; direct provider traffic is not affected."
     },
     "appConfig": {
       "configDir": "Config directory"

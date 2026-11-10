@@ -15,6 +15,7 @@ import {
   Info,
   Loader2,
   Route,
+  ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
 import { toast } from "@/lib/toast";
@@ -41,6 +42,7 @@ import { GlobalProxySettings } from "@/components/settings/GlobalProxySettings";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
 import { GeneralSection } from "@/components/settings/sections/GeneralSection";
 import { AppConfigSection } from "@/components/settings/sections/AppConfigSection";
+import { PrivacySection } from "@/components/settings/sections/PrivacySection";
 import {
   SettingsBlock,
   SettingsBody,
@@ -60,6 +62,7 @@ const SECTION_ICON: Record<
   appConfig: Folder,
   routing: Route,
   network: Globe,
+  privacy: ShieldCheck,
   data: Database,
   about: Info,
 };
@@ -404,6 +407,10 @@ export function SettingsPage({
               <GlobalProxySettings />
             </div>
           </SettingsBlock>
+        );
+      case "privacy":
+        return (
+          <PrivacySection settings={settings} onAutoSave={handleAutoSave} />
         );
       case "data":
         return (

@@ -1148,8 +1148,31 @@
       "appConfig": "アプリ設定",
       "routing": "ローカルルーティング",
       "network": "ネットワーク",
+      "privacy": "プライバシー",
       "data": "データ",
       "about": "情報"
+    },
+    "privacy": {
+      "title": "リクエストの秘匿化",
+      "description": "リクエストを上流へ送る前に機密情報を置き換え、応答で元に戻します。CC Switch のローカルプロキシ経由のリクエストのみ対象です。",
+      "enabled": "リクエストの秘匿化を有効にする",
+      "enabledDescription": "オフの場合、リクエストと応答は変更されません。",
+      "secrets": "機密情報と認証情報を秘匿化",
+      "secretsDescription": "API キー、JWT、接続文字列のパスワード、環境変数の機密情報など。",
+      "personal": "個人情報を秘匿化",
+      "personalDescription": "メールアドレス、電話番号、銀行カード、IBAN、身分証明書番号など。",
+      "wordsTitle": "カスタム語と許可リスト",
+      "wordsDescription": "カスタム語は 1 行に 1 つ。許可リストの値は秘匿化されません。",
+      "wordsLabel": "秘匿化するカスタム語",
+      "wordsPlaceholder": "1 行に 1 つ、例：\n社内プロジェクト名\n顧客名",
+      "allowLabel": "許可リスト",
+      "allowPlaceholder": "1 行に 1 つ。一致する値はそのまま送信されます",
+      "previewTitle": "プレビュー",
+      "previewDescription": "現在の設定でテキストを試します（常に有効として扱います）。",
+      "previewPlaceholder": "メール、電話番号、キーを含むテキストを貼り付け…",
+      "previewButton": "プレビュー",
+      "previewHits": "{{hits}} 件ヒット、{{placeholders}} 個のプレースホルダー",
+      "proxyOnly": "注：CC Switch のローカルプロキシ経由のリクエストのみ秘匿化されます。プロバイダーへの直接通信には適用されません。"
     },
     "appConfig": {
       "configDir": "設定ディレクトリ"

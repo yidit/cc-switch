@@ -77,6 +77,15 @@ export const settingsApi = {
     return await invoke("is_portable_mode");
   },
 
+  /** 用当前脱敏配置预览一段文本（总是按已开启处理）。 */
+  async previewRedaction(text: string): Promise<{
+    masked: string;
+    hits: number;
+    placeholders: number;
+  }> {
+    return await invoke("preview_redaction", { text });
+  },
+
   async getConfigDir(appId: AppId): Promise<string> {
     return await invoke("get_config_dir", { app: appId });
   },
