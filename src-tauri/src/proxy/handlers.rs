@@ -64,8 +64,8 @@ fn apply_request_redaction(body: &mut Value, ctx: &mut RequestContext) -> Result
         return Ok(());
     }
 
-    // 指纹必须在改写请求体之前算：占位符若退化为按请求随机，指纹会每轮漂移。
-    // 只在脱敏开启时计算，未开启的请求保持零额外开销。
+    // 指纹必须在改写请求体之前计算：占位符若退化为每次请求随机，指纹就会每轮不同。
+    // 只有开启脱敏时才计算，未开启的请求没有额外开销。
     if ctx.conversation_fingerprint.is_none() {
         ctx.conversation_fingerprint = crate::proxy::forwarder::conversation_fingerprint(body);
     }

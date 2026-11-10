@@ -2,7 +2,7 @@
 //!
 //! 评估语料要求排除几类「看起来像邮箱」的文本：媒体文件名（`logo@3x.png`）、
 //! SSH 地址（`git@host`）、Git 机器人地址、示例域名，以及 `dependabot[bot]@…`
-//! 这类本地部分带方括号的地址。
+//! 这类 `@` 前面带方括号的地址。
 
 use std::sync::OnceLock;
 
@@ -17,7 +17,7 @@ impl Detector for EmailDetector {
         if !config.personal || !kind_enabled(config, Kind::Email) {
             return Vec::new();
         }
-        // 廉价前置判断：没有 @ 的文本不可能命中，长上下文里能省掉整个正则扫描。
+        // 简单的前置判断：没有 @ 的文本不可能命中，长上下文里能省掉整个正则扫描。
         if !text.contains('@') {
             return Vec::new();
         }
@@ -44,7 +44,7 @@ impl Detector for EmailDetector {
 fn regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // 前导字符不能是本地部分字符、`]`、`:` 或 `/`：
+        // 匹配位置之前不能是字母、数字、`._%+-`、`]`、`:` 或 `/`：
         // - 排除 `dependabot[bot]@…` 的 `bot@…` 片段；
         // - 排除连接串 userinfo 里的 `password@host`。
         // 结尾要求非字母数字或文本结束，避免把 `intro@2x.mp4` 截成 `intro@2x.mp`。

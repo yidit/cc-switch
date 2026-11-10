@@ -117,10 +117,11 @@ pub struct RedactConfig {
     /// 脱敏失败时拒绝请求，而不是把原文发往上游。
     #[serde(default = "default_true")]
     pub fail_closed: bool,
-    /// 占位符派生盐（本机随机生成，保存设置时补齐）。
+    /// 生成占位符用的盐值（本机随机生成，保存设置时补齐）。
     ///
-    /// 同一个盐下，相同的原值总是得到相同的占位符，从而让上游的提示缓存
-    /// 与会话指纹在跨请求时保持稳定。`None` 时退化为按请求随机（旧配置）。
+    /// 盐值相同时，相同的原值总是得到相同的占位符，因此上游的提示缓存
+    /// 和会话指纹在不同请求之间保持不变。`None` 表示旧配置，此时每次
+    /// 请求都会重新随机。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub salt: Option<String>,
 }

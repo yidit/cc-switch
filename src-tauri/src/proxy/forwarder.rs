@@ -375,7 +375,7 @@ pub struct RequestForwarder {
     copilot_optimizer_config: CopilotOptimizerConfig,
     /// 脱敏前基于原文算好的会话指纹。
     ///
-    /// 脱敏会改写 system / messages，占位符若按请求随机生成，指纹就会每轮漂移；
+    /// 脱敏会改写 system / messages，占位符若每次请求都重新随机，指纹就会每轮不同；
     /// 这里优先使用请求进入时算好的值。
     conversation_fingerprint_hint: Option<String>,
     /// 非流式请求超时（秒）

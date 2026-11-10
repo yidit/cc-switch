@@ -1,7 +1,8 @@
 //! 占位符生成、映射与还原。
 //!
 //! 格式与 magpie 一致：`{{KIND_xxxxxxxx}}`，后缀为 8 位 base32 字符
-//! （`a-z2-7`）。同一张表内，相同的原值复用同一个占位符。
+//! （`a-z2-7`）。同一张表内，相同的原值复用同一个占位符；配置了盐值时，
+//! 不同请求之间也保持一致。
 
 use std::collections::HashMap;
 
@@ -27,9 +28,9 @@ pub struct PlaceholderTable {
 
 /// 占位符后缀的来源。
 enum Source {
-    /// 按请求随机（没有配置盐时的回退）。
+    /// 每次请求随机生成（没有配置盐值时使用）。
     Random(Rng),
-    /// 按设备盐派生：同一盐下相同原值总是得到相同占位符。
+    /// 用本机盐值计算：相同盐值下，相同原值总是得到相同占位符。
     Salted(Vec<u8>),
 }
 
@@ -44,10 +45,10 @@ impl PlaceholderTable {
         Self::from_rng(Rng::from_seed(seed))
     }
 
-    /// 用设备盐创建：相同 `salt`、相同原值在不同请求里得到同一个占位符。
+    /// 用本机盐值创建：`salt` 相同、原值相同时，不同请求会得到同一个占位符。
     ///
-    /// 这样上游提示缓存与会话指纹不会因为占位符变化而失效；盐由本机随机
-    /// 生成并随设置保存，不同设备之间互不相同。
+    /// 这样上游的提示缓存和会话指纹不会因为占位符变化而失效；盐值由本机随机
+    /// 生成，随设置一起保存，不同设备之间互不相同。
     pub fn with_salt(salt: &str) -> Self {
         Self {
             forward: HashMap::new(),
@@ -56,7 +57,7 @@ impl PlaceholderTable {
         }
     }
 
-    /// 按配置里的盐创建；没有盐（旧配置）时退化为按请求随机。
+    /// 按配置里的盐值创建；旧配置没有盐值时，退化为每次请求随机。
     pub fn from_config(config: &RedactConfig) -> Self {
         match config.salt.as_deref() {
             Some(salt) => Self::with_salt(salt),
@@ -88,7 +89,7 @@ impl PlaceholderTable {
             if !self.backward.contains_key(&candidate) {
                 break candidate;
             }
-            // 掩码空间是 40 bit，撞车概率极低；换一个派生输入继续尝试。
+            // 后缀只有 40 bit，发生重复的概率极低；换一组输入重新计算即可。
             attempt = attempt.wrapping_add(1);
         };
 
@@ -178,7 +179,7 @@ impl Rng {
     }
 }
 
-/// 由「盐 + 类型 + 原值 + 尝试次数」派生 8 位 base32 后缀。
+/// 根据「盐值 + 类型 + 原值 + 尝试次数」计算 8 位 base32 后缀。
 ///
 /// 取 SHA-256 的前 5 字节（40 bit）映射到 base32 字母表；同一输入结果固定。
 fn salted_suffix(salt: &[u8], kind: Kind, value: &str, attempt: u32) -> String {
@@ -283,7 +284,7 @@ mod tests {
 
         let a = first.placeholder_for("alice@example.com", Kind::Email);
         let b = second.placeholder_for("alice@example.com", Kind::Email);
-        assert_eq!(a, b, "同一盐下相同原值必须得到同一个占位符");
+        assert_eq!(a, b, "相同盐值下，相同原值必须得到同一个占位符");
         assert!(is_placeholder(&a, Kind::Email), "{a}");
         assert_eq!(second.restore(&b), "alice@example.com");
     }

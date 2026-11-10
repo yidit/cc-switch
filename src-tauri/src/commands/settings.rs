@@ -61,8 +61,8 @@ fn merge_settings_for_save(
         incoming.redact = existing.redact.clone();
     }
     if let Some(redact) = incoming.redact.as_mut() {
-        // 占位符派生盐由后端维护：沿用已保存的盐，没有时生成一个并随本次保存落盘。
-        // 盐只影响占位符后缀，不参与任何加密，前端无需感知。
+        // 占位符盐值由后端维护：沿用已保存的盐值，没有时生成一个，随本次保存写入设置。
+        // 盐值只影响占位符后缀，不参与加密，前端无需处理。
         if redact.salt.is_none() {
             redact.salt = existing
                 .redact

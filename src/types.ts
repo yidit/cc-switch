@@ -440,7 +440,7 @@ export interface RedactConfig {
   rules: RedactRule[];
   allow: string[];
   failClosed: boolean;
-  /** 占位符派生盐，由后端维护，前端只负责原样回传。 */
+  /** 生成占位符用的盐值，由后端维护，前端原样保存即可。 */
   salt?: string;
 }
 

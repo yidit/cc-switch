@@ -16,7 +16,7 @@ impl Detector for AccountDetector {
         if !config.personal || !kind_enabled(config, Kind::Account) {
             return Vec::new();
         }
-        // 廉价前置判断：没有数字的文本不可能命中。
+        // 简单的前置判断：没有数字的文本不可能命中。
         if !text.bytes().any(|byte| byte.is_ascii_digit()) {
             return Vec::new();
         }

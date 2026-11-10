@@ -37,7 +37,7 @@ pub fn mask_request_body(
     }
 
     let engine = Engine::with_builtin(config);
-    // 配置了盐时按盐派生占位符，保证跨请求稳定；老配置没有盐则按请求随机。
+    // 配置了盐值时按盐值计算占位符，不同请求之间保持一致；旧配置没有盐值时，每次请求随机。
     let mut table = PlaceholderTable::from_config(config);
     let stats = mask_json(body, &engine, config, &mut table);
 
@@ -204,7 +204,7 @@ mod tests {
         };
         let mut body = json!({"content": "mail jane.smith@gmail.com"});
         let table = mask_request_body(&mut body, &config)
-            .expect("fail-open 不应报错")
+            .expect("关闭 failClosed 后不应报错")
             .expect("内置规则仍应命中");
         assert!(body["content"].as_str().unwrap().contains("{{EMAIL_"));
         assert_eq!(table.len(), 1);
@@ -225,7 +225,7 @@ mod tests {
 
         assert_eq!(
             first["content"], second["content"],
-            "同一盐下相同原值必须得到同一个占位符"
+            "相同盐值下，相同原值必须得到同一个占位符"
         );
     }
 
@@ -299,7 +299,7 @@ mod tests {
                 "jane.smith@gmail.com",
                 "在字节 {split} 处切开时未还原"
             );
-            assert!(pending.is_empty(), "在字节 {split} 处切开后仍有余留");
+            assert!(pending.is_empty(), "在字节 {split} 处切开后仍剩余内容");
         }
     }
 
@@ -308,7 +308,7 @@ mod tests {
         let table = PlaceholderTable::with_seed(7);
         let mut pending = vec![0xff, 0xfe, 0x00];
 
-        let flushed = flush_stream_restore(&table, &mut pending).expect("应返回余留内容");
+        let flushed = flush_stream_restore(&table, &mut pending).expect("应返回剩余内容");
         assert_eq!(flushed, vec![0xff, 0xfe, 0x00]);
         assert!(pending.is_empty());
     }
