@@ -11,7 +11,7 @@ pub mod detectors;
 pub mod placeholder;
 pub mod types;
 
-use detectors::SecretDetector;
+use detectors::{AccountDetector, EmailDetector, PhoneDetector, SecretDetector};
 
 pub use placeholder::PlaceholderTable;
 pub use types::{Action, CustomRule, Hit, Kind, MaskOutcome, RedactConfig};
@@ -34,11 +34,17 @@ pub struct Engine {
 impl Engine {
     /// 按配置构建内置检测器。
     ///
-    /// 目前注册密钥/凭据检测器；Phase 1 的后续步骤会加入个人信息检测器。
+    /// 目前注册密钥、邮箱、电话与账户检测器；`personal` 关闭时会跳过
+    /// 后三者，`kinds` 再进一步限定类型。
     pub fn with_builtin(config: &RedactConfig) -> Self {
         let mut detectors: Vec<Box<dyn Detector>> = Vec::new();
         if config.secrets {
             detectors.push(Box::new(SecretDetector));
+        }
+        if config.personal {
+            detectors.push(Box::new(EmailDetector));
+            detectors.push(Box::new(PhoneDetector));
+            detectors.push(Box::new(AccountDetector));
         }
         Self { detectors }
     }
@@ -243,5 +249,20 @@ mod tests {
         let text = "DB_PASSWORD=Tr0ub4dor&3xyz";
         let outcome = Engine::with_builtin(&config).mask_text(text, &config, &mut table);
         assert_eq!(outcome.text, text);
+    }
+
+    #[test]
+    fn builtin_engine_masks_personal_data() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let config = enabled_config();
+        let outcome = Engine::with_builtin(&config).mask_text(
+            "mail jane.smith@gmail.com or call 415-555-0132",
+            &config,
+            &mut table,
+        );
+        assert!(outcome.text.contains("{{EMAIL_"));
+        assert!(outcome.text.contains("{{PHONE_"));
+        assert!(!outcome.text.contains("jane.smith@gmail.com"));
+        assert!(!outcome.text.contains("415-555-0132"));
     }
 }
