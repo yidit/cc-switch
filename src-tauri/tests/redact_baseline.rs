@@ -32,7 +32,7 @@ fn cases(fixture: &Value) -> &[Value] {
         .as_slice()
 }
 
-fn values_of(case: &Value, field: &str) -> &[Value] {
+fn values_of<'a>(case: &'a Value, field: &str) -> &'a [Value] {
     case[field]
         .as_array()
         .unwrap_or_else(|| panic!("{} 必须是数组", field))

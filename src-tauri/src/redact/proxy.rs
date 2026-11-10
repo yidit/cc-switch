@@ -66,19 +66,20 @@ pub fn restore_stream_chunk(
     pending: &mut Vec<u8>,
     chunk: &[u8],
 ) -> Vec<u8> {
-    pending.extend_from_slice(chunk);
+    // 先把 pending 整体取出，避免后面写回时与原缓冲区的借用冲突。
+    let mut buffer = std::mem::take(pending);
+    buffer.extend_from_slice(chunk);
 
-    let Ok(text) = std::str::from_utf8(pending) else {
+    let Ok(text) = std::str::from_utf8(&buffer) else {
         // 非法 UTF-8：不冒险改写，原样放行。
-        return std::mem::take(pending);
+        return buffer;
     };
 
     let keep_from = incomplete_placeholder_start(text);
-    let (head, tail) = text.split_at(keep_from);
-    let restored = table.restore(head);
+    let restored = table.restore(&text[..keep_from]);
+    let tail = text.as_bytes()[keep_from..].to_vec();
 
-    pending.clear();
-    pending.extend_from_slice(tail.as_bytes());
+    pending.extend_from_slice(&tail);
     restored.into_bytes()
 }
 

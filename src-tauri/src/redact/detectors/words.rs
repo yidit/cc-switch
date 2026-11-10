@@ -56,7 +56,7 @@ impl Detector for WordDetector {
 mod tests {
     use super::*;
 
-    fn detect(text: &str, words: &[&str], any_case: bool, whole: bool) -> Vec<&str> {
+    fn detect<'a>(text: &'a str, words: &[&str], any_case: bool, whole: bool) -> Vec<&'a str> {
         let config = RedactConfig {
             enabled: true,
             ..Default::default()
