@@ -99,7 +99,11 @@ pub fn mask_json(
 
 fn collect_strings(value: &Value, key: Option<&str>, out: &mut Vec<String>) {
     match value {
-        Value::String(text) if !key.is_some_and(should_skip) => out.push(text.clone()),
+        Value::String(text)
+            if !key.is_some_and(should_skip) && !looks_like_encoded_payload(text) =>
+        {
+            out.push(text.clone())
+        }
         Value::String(_) => {}
         Value::Array(items) => {
             for item in items {
@@ -128,7 +132,7 @@ fn walk_mask(
 ) {
     match value {
         Value::String(text) => {
-            if key.is_some_and(should_skip) {
+            if key.is_some_and(should_skip) || looks_like_encoded_payload(text) {
                 return;
             }
             let current = *index;
@@ -201,6 +205,40 @@ fn should_skip(key: &str) -> bool {
     SKIP_KEYS.iter().any(|skip| skip.eq_ignore_ascii_case(key))
 }
 
+/// 判断字符串是否像 base64 或 data URL 这类编码后的二进制内容。
+///
+/// 图片、附件在请求里通常是几 MB 的 base64：规则正则扫描代价高，模型的
+/// token 预算会被瞬间吃光，自定义规则还可能把数据改坏，因此整段跳过。
+fn looks_like_encoded_payload(text: &str) -> bool {
+    const MIN_LEN: usize = 1024;
+    if text.len() < MIN_LEN {
+        return false;
+    }
+
+    let body = if text.starts_with("data:") {
+        text.split_once(',').map_or(text, |(_, body)| body)
+    } else {
+        text
+    };
+    if body.len() < MIN_LEN {
+        return false;
+    }
+
+    let mut allowed = 0usize;
+    let mut total = 0usize;
+    for ch in body.chars() {
+        total += 1;
+        if ch.is_ascii_alphanumeric()
+            || matches!(ch, '+' | '/' | '=' | '-' | '_' | '\n' | '\r' | ' ')
+        {
+            allowed += 1;
+        } else {
+            return false;
+        }
+    }
+    total > 0 && allowed * 100 >= total * 98
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -258,6 +296,36 @@ mod tests {
 
         assert_eq!(restored_count, 2);
         assert_eq!(value, original);
+    }
+
+    #[test]
+    fn skips_encoded_binary_payloads() {
+        let (engine, config) = engine_and_config();
+        let mut table = PlaceholderTable::with_seed(7);
+        let payload = format!("data:image/png;base64,{}", "A".repeat(4096));
+        let mut value = json!({"content": payload});
+
+        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
+
+        assert_eq!(stats.strings, 0, "base64 负载不应参与脱敏");
+        assert_eq!(
+            value["content"].as_str().unwrap(),
+            payload,
+            "base64 负载必须保持原样"
+        );
+    }
+
+    #[test]
+    fn long_prose_is_still_masked() {
+        let (engine, config) = engine_and_config();
+        let mut table = PlaceholderTable::with_seed(7);
+        let text = "这是一段普通文本，包含邮箱 jane.smith@gmail.com。".repeat(100);
+        let mut value = json!({"content": text});
+
+        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
+
+        assert_eq!(stats.strings, 1);
+        assert!(value["content"].as_str().unwrap().contains("{{EMAIL_"));
     }
 
     #[test]

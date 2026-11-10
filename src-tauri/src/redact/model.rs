@@ -167,16 +167,14 @@ impl ModelEngine {
             return filter_by_config(&hits, config);
         }
 
-        let hits = self
-            .infer(text, threshold, budget)
-            .filter(|hit| kind_enabled(config, hit.kind))
-            .collect::<Vec<_>>();
+        // 缓存未过滤的原始命中：类型开关随时可能变化，过滤放在读取时做，
+        // 否则先只开 EMAIL 跑过的文本会一直缺人名/地址的命中。
+        let hits = self.infer(text, threshold, budget).collect::<Vec<_>>();
 
-        // 只有实际命中的结果才值得缓存；没命中的文本也缓存，避免重复推理。
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(key, hits.clone());
         }
-        hits
+        filter_by_config(&hits, config)
     }
 
     fn infer(&self, text: &str, threshold: f32, budget: &mut usize) -> impl Iterator<Item = Hit> {

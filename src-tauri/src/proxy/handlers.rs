@@ -100,6 +100,78 @@ async fn apply_request_redaction(
     }
 }
 
+/// 还原转换分支写回客户端的占位符。
+///
+/// Claude / Codex 的格式转换分支不经过 `process_response`，需要在这里统一还原：
+/// SSE 按块还原并处理跨块占位符，其余响应整体还原后重建实体头。
+async fn restore_transformed_response(
+    response: axum::response::Response,
+    ctx: &RequestContext,
+) -> Result<axum::response::Response, ProxyError> {
+    let Some(table) = ctx.redaction.clone() else {
+        return Ok(response);
+    };
+    if table.is_empty() {
+        return Ok(response);
+    }
+
+    let (mut parts, body) = response.into_parts();
+    let is_stream = parts
+        .headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
+
+    if !is_stream {
+        let bytes = body
+            .collect()
+            .await
+            .map_err(|error| ProxyError::Internal(format!("读取响应体失败：{error}")))?
+            .to_bytes();
+        let restored = crate::redact::proxy::restore_response_body(&bytes, &table)
+            .unwrap_or_else(|| bytes.to_vec());
+        strip_entity_headers_for_rebuilt_body(&mut parts.headers);
+        return Ok(axum::response::Response::from_parts(
+            parts,
+            axum::body::Body::from(restored),
+        ));
+    }
+
+    let mut data = body.into_data_stream();
+    let stream = async_stream::stream! {
+        let mut pending: Vec<u8> = Vec::new();
+        while let Some(chunk) = data.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    let restored = crate::redact::proxy::restore_stream_chunk(
+                        &table,
+                        &mut pending,
+                        &bytes,
+                    );
+                    if !restored.is_empty() {
+                        yield Ok::<Bytes, axum::Error>(Bytes::from(restored));
+                    }
+                }
+                Err(error) => {
+                    yield Err(error);
+                    break;
+                }
+            }
+        }
+        if let Some(tail) = crate::redact::proxy::flush_stream_restore(&table, &mut pending) {
+            if !tail.is_empty() {
+                yield Ok(Bytes::from(tail));
+            }
+        }
+    };
+
+    strip_entity_headers_for_rebuilt_body(&mut parts.headers);
+    Ok(axum::response::Response::from_parts(
+        parts,
+        axum::body::Body::from_stream(stream),
+    ))
+}
+
 // ============================================================================
 // 健康检查和状态查询（简单端点）
 // ============================================================================
@@ -467,7 +539,7 @@ async fn handle_messages_for_app(
 
     // Claude 特有：格式转换处理
     if needs_transform {
-        return handle_claude_transform(
+        let response = handle_claude_transform(
             response,
             &ctx,
             &state,
@@ -476,7 +548,8 @@ async fn handle_messages_for_app(
             &api_format,
             connection_guard,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     drop(body);
@@ -1226,7 +1299,7 @@ async fn handle_responses_for_app(
     let response = result.response;
 
     if codex_upstream_format == Some(CodexUpstreamFormat::Anthropic) {
-        return handle_codex_anthropic_to_responses_transform(
+        let response = handle_codex_anthropic_to_responses_transform(
             response,
             &ctx,
             &state,
@@ -1234,11 +1307,12 @@ async fn handle_responses_for_app(
             connection_guard,
             codex_tool_context,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if codex_upstream_format == Some(CodexUpstreamFormat::ChatCompletions) {
-        return handle_codex_chat_to_responses_transform(
+        let response = handle_codex_chat_to_responses_transform(
             response,
             &ctx,
             &state,
@@ -1246,7 +1320,8 @@ async fn handle_responses_for_app(
             connection_guard,
             codex_tool_context,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     // 原生 Responses 第三方的压缩回合：上游只会回普通消息，补上 Codex 要的那个
@@ -1256,8 +1331,10 @@ async fn handle_responses_for_app(
         && matches!(app_type, AppType::Codex)
         && !super::providers::is_codex_official_provider(&ctx.provider)
     {
-        return handle_codex_native_compaction_response(response, &ctx, &state, connection_guard)
-            .await;
+        let response =
+            handle_codex_native_compaction_response(response, &ctx, &state, connection_guard)
+                .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     // Native Responses passthrough to a strict gateway (xAI): restore flattened
@@ -1267,25 +1344,22 @@ async fn handle_responses_for_app(
         &ctx.provider,
         ctx.outbound_model.as_deref(),
     ) {
-        return handle_codex_xai_native_responses_rewrite(
+        let response = handle_codex_xai_native_responses_rewrite(
             response,
             &ctx,
             &state,
             connection_guard,
             namespace_restore_map,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if super::providers::provider_needs_responses_late_arguments_repair(&ctx.provider) {
-        return handle_codex_late_arguments_repair(
-            response,
-            &ctx,
-            &state,
-            is_stream,
-            connection_guard,
-        )
-        .await;
+        let response =
+            handle_codex_late_arguments_repair(response, &ctx, &state, is_stream, connection_guard)
+                .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     process_response(
@@ -1585,7 +1659,7 @@ async fn handle_responses_compact_for_app(
     let response = result.response;
 
     if codex_upstream_format == Some(CodexUpstreamFormat::Anthropic) {
-        return handle_codex_anthropic_to_responses_transform(
+        let response = handle_codex_anthropic_to_responses_transform(
             response,
             &ctx,
             &state,
@@ -1593,11 +1667,12 @@ async fn handle_responses_compact_for_app(
             connection_guard,
             codex_tool_context,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if codex_upstream_format == Some(CodexUpstreamFormat::ChatCompletions) {
-        return handle_codex_chat_to_responses_transform(
+        let response = handle_codex_chat_to_responses_transform(
             response,
             &ctx,
             &state,
@@ -1605,32 +1680,30 @@ async fn handle_responses_compact_for_app(
             connection_guard,
             codex_tool_context,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if super::providers::provider_needs_responses_namespace_flatten(
         &ctx.provider,
         ctx.outbound_model.as_deref(),
     ) {
-        return handle_codex_xai_native_responses_rewrite(
+        let response = handle_codex_xai_native_responses_rewrite(
             response,
             &ctx,
             &state,
             connection_guard,
             namespace_restore_map,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if super::providers::provider_needs_responses_late_arguments_repair(&ctx.provider) {
-        return handle_codex_late_arguments_repair(
-            response,
-            &ctx,
-            &state,
-            is_stream,
-            connection_guard,
-        )
-        .await;
+        let response =
+            handle_codex_late_arguments_repair(response, &ctx, &state, is_stream, connection_guard)
+                .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     process_response(

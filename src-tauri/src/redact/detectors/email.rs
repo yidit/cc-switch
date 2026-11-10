@@ -23,10 +23,10 @@ impl Detector for EmailDetector {
         }
 
         let mut hits = Vec::new();
-        for captures in regex().captures_iter(text) {
-            let Some(found) = captures.get(1) else {
+        for found in regex().find_iter(text) {
+            if !has_email_boundaries(text, found.start(), found.end()) {
                 continue;
-            };
+            }
             if !plausible_email(found.as_str()) {
                 continue;
             }
@@ -41,17 +41,36 @@ impl Detector for EmailDetector {
     }
 }
 
+/// 检查地址两端的边界。
+///
+/// 正则只匹配地址本身（不吞前后的分隔符），这样相邻的两个地址
+/// `a@b.com c@d.com` 都能被找到；边界在匹配之后单独判断。
+fn has_email_boundaries(text: &str, start: usize, end: usize) -> bool {
+    if let Some(previous) = text[..start].chars().next_back() {
+        // 前面是地址里会出现的字符、`]`、`:` 或 `/` 时，说明匹配从中间开始。
+        if previous.is_ascii_alphanumeric()
+            || matches!(previous, '.' | '_' | '%' | '+' | '-' | ']' | ':' | '/')
+        {
+            return false;
+        }
+    }
+    if let Some(next) = text[end..].chars().next() {
+        if next.is_ascii_alphanumeric() {
+            return false;
+        }
+    }
+    true
+}
+
 fn regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // 匹配位置之前不能是字母、数字、`._%+-`、`]`、`:` 或 `/`：
-        // - 排除 `dependabot[bot]@…` 的 `bot@…` 片段；
-        // - 排除连接串 userinfo 里的 `password@host`。
-        // 结尾要求非字母数字或文本结束，避免把 `intro@2x.mp4` 截成 `intro@2x.mp`。
-        Regex::new(
-            r"(?:^|[^A-Za-z0-9._%+\-\[\]:/])([A-Za-z0-9._%+\-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})(?:[^A-Za-z0-9]|$)",
-        )
-        .expect("邮箱正则应始终合法")
+        // 只匹配地址本身，前后边界由 `has_email_boundaries` 判断：
+        // - `dependabot[bot]@…` 里的 `]` 会让本地部分无法匹配；
+        // - 连接串 userinfo 的 `password@host` 由前导 `:` / `/` 排除；
+        // - 相邻地址（逗号、分号或空格分隔）都能各自命中。
+        Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+            .expect("邮箱正则应始终合法")
     })
 }
 
@@ -139,6 +158,13 @@ mod tests {
             detect("li.na@qq.com 和 omar.haddad@proton.me"),
             vec!["li.na@qq.com", "omar.haddad@proton.me"]
         );
+    }
+
+    #[test]
+    fn detects_addresses_separated_by_a_single_delimiter() {
+        assert_eq!(detect("a@b.com c@d.com"), vec!["a@b.com", "c@d.com"]);
+        assert_eq!(detect("a@b.com,c@d.com"), vec!["a@b.com", "c@d.com"]);
+        assert_eq!(detect("cc: a@b.com;d@e.com"), vec!["a@b.com", "d@e.com"]);
     }
 
     #[test]

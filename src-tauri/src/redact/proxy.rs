@@ -103,14 +103,16 @@ pub fn restore_stream_chunk(
     let mut buffer = std::mem::take(pending);
     buffer.extend_from_slice(chunk);
 
-    let Ok(text) = std::str::from_utf8(&buffer) else {
-        // 非法 UTF-8：不冒险改写，原样放行。
-        return buffer;
+    // chunk 可能切在多字节字符中间：只处理合法前缀，把不完整字符留在 pending。
+    let valid_len = match std::str::from_utf8(&buffer) {
+        Ok(text) => text.len(),
+        Err(error) => error.valid_up_to(),
     };
+    let text = std::str::from_utf8(&buffer[..valid_len]).expect("valid_up_to 之前必然是合法 UTF-8");
 
     let keep_from = incomplete_placeholder_start(text);
     let restored = table.restore(&text[..keep_from]);
-    let tail = text.as_bytes()[keep_from..].to_vec();
+    let tail = buffer[keep_from..].to_vec();
 
     pending.extend_from_slice(&tail);
     restored.into_bytes()
@@ -318,6 +320,28 @@ mod tests {
             );
             assert!(pending.is_empty(), "在字节 {split} 处切开后仍剩余内容");
         }
+    }
+
+    #[test]
+    fn restores_placeholders_when_a_chunk_cuts_a_multibyte_character() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let placeholder = table.placeholder_for("jane.smith@gmail.com", crate::redact::Kind::Email);
+        let text = format!("{placeholder}中");
+        let bytes = text.as_bytes();
+        // “中”占 3 字节，在它内部切开：前一个 chunk 的尾部不是合法 UTF-8。
+        let split = placeholder.len() + 1;
+
+        let mut pending = Vec::new();
+        let mut out = Vec::new();
+        out.extend(restore_stream_chunk(&table, &mut pending, &bytes[..split]));
+        out.extend(restore_stream_chunk(&table, &mut pending, &bytes[split..]));
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "jane.smith@gmail.com中",
+            "切在多字节字符中间时也要还原完整的占位符"
+        );
+        assert!(pending.is_empty());
     }
 
     #[test]
