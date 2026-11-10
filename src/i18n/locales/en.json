@@ -1172,7 +1172,26 @@
       "previewPlaceholder": "Paste text containing an email, phone number, or key…",
       "previewButton": "Preview",
       "previewHits": "{{hits}} hits, {{placeholders}} placeholders",
-      "proxyOnly": "Note: only requests through CC Switch's local proxy are redacted; direct provider traffic is not affected."
+      "proxyOnly": "Note: only requests through CC Switch's local proxy are redacted; direct provider traffic is not affected.",
+      "failClosed": "Block requests when the config is invalid",
+      "failClosedDescription": "Return an error instead of sending the original text upstream when a custom rule cannot be used.",
+      "kindsTitle": "Personal data types",
+      "kindsDescription": "Disabled types are no longer detected; secrets are controlled by the switch above.",
+      "kindSECRET": "Secrets",
+      "kindPERSON": "Names / custom words",
+      "kindPHONE": "Phone numbers",
+      "kindEMAIL": "Emails",
+      "kindACCOUNT": "Account numbers",
+      "kindADDRESS": "Addresses",
+      "rulesTitle": "Custom rules",
+      "rulesDescription": "Add regular expressions on top of the built-in detectors; each rule can use a placeholder, a mask, or drop the value.",
+      "rulesEmpty": "No custom rules yet.",
+      "rulePatternPlaceholder": "Pattern, e.g. TICKET-[0-9]{6}",
+      "ruleAdd": "Add rule",
+      "ruleRemove": "Remove rule",
+      "actionPlaceholder": "Placeholder",
+      "actionMask": "Mask",
+      "actionDrop": "Drop"
     },
     "appConfig": {
       "configDir": "Config directory"

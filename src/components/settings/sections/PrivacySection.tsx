@@ -1,16 +1,38 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Play } from "lucide-react";
+import { Loader2, Play, Plus, Trash2 } from "lucide-react";
 import { settingsApi } from "@/lib/api";
-import type { RedactConfig } from "@/types";
+import type {
+  RedactAction,
+  RedactConfig,
+  RedactKind,
+  RedactRule,
+} from "@/types";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   SettingsBlock,
   SettingsCard,
   SettingsSwitchRow,
 } from "@/components/settings/SettingsLayout";
+import {
+  PERSONAL_KINDS,
+  REDACT_ACTIONS,
+  REDACT_KINDS,
+  createRule,
+  isKindEnabled,
+  splitList,
+  withKindEnabled,
+} from "@/lib/redactConfig";
 
 interface PrivacySectionProps {
   settings: SettingsFormState;
@@ -31,13 +53,6 @@ const DEFAULT_REDACT: RedactConfig = {
   failClosed: true,
 };
 
-function splitList(value: string): string[] {
-  return value
-    .split(/[\n,，]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 /**
  * 设置 → 隐私：请求脱敏。
  *
@@ -49,11 +64,14 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
 
   const [wordsDraft, setWordsDraft] = useState(redact.words.join("\n"));
   const [allowDraft, setAllowDraft] = useState(redact.allow.join("\n"));
+  // 规则输入框保留本地草稿，失焦时才写回，避免每敲一个字符保存一次。
+  const [ruleDrafts, setRuleDrafts] = useState<RedactRule[]>(redact.rules);
   const [previewInput, setPreviewInput] = useState("");
   const [preview, setPreview] = useState<{
     masked: string;
     hits: number;
     placeholders: number;
+    errors: string[];
   } | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
@@ -65,8 +83,33 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
     setAllowDraft(redact.allow.join("\n"));
   }, [redact.allow]);
 
+  useEffect(() => {
+    setRuleDrafts(redact.rules);
+  }, [redact.rules]);
+
   const update = (patch: Partial<RedactConfig>) => {
     void onAutoSave({ redact: { ...redact, ...patch } });
+  };
+
+  const commitRules = (rules: RedactRule[]) => {
+    setRuleDrafts(rules);
+    update({ rules });
+  };
+
+  const patchRule = (index: number, patch: Partial<RedactRule>) => {
+    setRuleDrafts((current) =>
+      current.map((rule, itemIndex) =>
+        itemIndex === index ? { ...rule, ...patch } : rule,
+      ),
+    );
+  };
+
+  const addRule = () => {
+    commitRules([...ruleDrafts, createRule(redact)]);
+  };
+
+  const deleteRule = (index: number) => {
+    commitRules(ruleDrafts.filter((_, itemIndex) => itemIndex !== index));
   };
 
   const handlePreview = async () => {
@@ -80,6 +123,12 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
       setPreviewing(false);
     }
   };
+
+  const kindLabel = (kind: RedactKind) => t(`settings.privacy.kind${kind}`);
+  const actionLabel = (action: RedactAction) =>
+    t(`settings.privacy.action${action[0].toUpperCase()}${action.slice(1)}`);
+
+  const personalDisabled = !redact.enabled || !redact.personal;
 
   return (
     <>
@@ -111,6 +160,35 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
             disabled={!redact.enabled}
             onCheckedChange={(value) => update({ personal: value })}
           />
+          <SettingsSwitchRow
+            label={t("settings.privacy.failClosed")}
+            description={t("settings.privacy.failClosedDescription")}
+            checked={redact.failClosed}
+            disabled={!redact.enabled}
+            onCheckedChange={(value) => update({ failClosed: value })}
+          />
+        </SettingsCard>
+      </SettingsBlock>
+
+      <SettingsBlock
+        title={t("settings.privacy.kindsTitle")}
+        help={{
+          title: t("settings.privacy.kindsTitle"),
+          body: t("settings.privacy.kindsDescription"),
+        }}
+      >
+        <SettingsCard>
+          {PERSONAL_KINDS.map((kind) => (
+            <SettingsSwitchRow
+              key={kind}
+              label={kindLabel(kind)}
+              checked={isKindEnabled(redact, kind)}
+              disabled={personalDisabled}
+              onCheckedChange={(value) =>
+                update(withKindEnabled(redact, kind, value))
+              }
+            />
+          ))}
         </SettingsCard>
       </SettingsBlock>
 
@@ -160,6 +238,98 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
       </SettingsBlock>
 
       <SettingsBlock
+        title={t("settings.privacy.rulesTitle")}
+        help={{
+          title: t("settings.privacy.rulesTitle"),
+          body: t("settings.privacy.rulesDescription"),
+        }}
+      >
+        <SettingsCard>
+          <div className="space-y-3 p-5">
+            {ruleDrafts.length === 0 && (
+              <p className="text-caption text-fg-2">
+                {t("settings.privacy.rulesEmpty")}
+              </p>
+            )}
+            {ruleDrafts.map((rule, index) => (
+              <div
+                key={rule.name}
+                className="flex flex-wrap items-center gap-2"
+              >
+                <Input
+                  value={rule.pattern}
+                  onChange={(event) =>
+                    patchRule(index, { pattern: event.target.value })
+                  }
+                  onBlur={() => commitRules(ruleDrafts)}
+                  placeholder={t("settings.privacy.rulePatternPlaceholder")}
+                  disabled={!redact.enabled}
+                  aria-label={t("settings.privacy.rulePatternPlaceholder")}
+                  className="min-w-[220px] flex-1 font-mono"
+                />
+                <Select
+                  value={rule.kind}
+                  disabled={!redact.enabled}
+                  onValueChange={(value) =>
+                    patchRule(index, { kind: value as RedactKind })
+                  }
+                >
+                  <SelectTrigger className="w-[130px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {REDACT_KINDS.map((kind) => (
+                      <SelectItem key={kind} value={kind}>
+                        {kindLabel(kind)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={rule.action ?? "placeholder"}
+                  disabled={!redact.enabled}
+                  onValueChange={(value) =>
+                    patchRule(index, { action: value as RedactAction })
+                  }
+                >
+                  <SelectTrigger className="w-[150px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {REDACT_ACTIONS.map((action) => (
+                      <SelectItem key={action} value={action}>
+                        {actionLabel(action)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="compact"
+                  disabled={!redact.enabled}
+                  aria-label={t("settings.privacy.ruleRemove")}
+                  onClick={() => deleteRule(index)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="neutral"
+              size="compact"
+              disabled={!redact.enabled}
+              onClick={addRule}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t("settings.privacy.ruleAdd")}
+            </Button>
+          </div>
+        </SettingsCard>
+      </SettingsBlock>
+
+      <SettingsBlock
         title={t("settings.privacy.previewTitle")}
         help={{
           title: t("settings.privacy.previewTitle"),
@@ -198,6 +368,13 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
                 </span>
               )}
             </div>
+            {preview && preview.errors.length > 0 && (
+              <ul className="space-y-1 rounded-lg border border-danger/40 bg-danger-soft p-3 text-caption text-danger-text">
+                {preview.errors.map((error) => (
+                  <li key={error}>{error}</li>
+                ))}
+              </ul>
+            )}
             {preview && (
               <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-subtle p-3 font-mono text-caption text-fg-1">
                 {preview.masked}

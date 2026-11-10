@@ -1172,7 +1172,26 @@
       "previewPlaceholder": "粘贴一段包含邮箱、电话或密钥的文本…",
       "previewButton": "预览",
       "previewHits": "命中 {{hits}} 处，生成 {{placeholders}} 个占位符",
-      "proxyOnly": "提示：只有经过 CC Switch 本地代理的请求会被脱敏，直连 provider 的流量不受影响。"
+      "proxyOnly": "提示：只有经过 CC Switch 本地代理的请求会被脱敏，直连 provider 的流量不受影响。",
+      "failClosed": "配置无效时拒绝请求",
+      "failClosedDescription": "自定义规则无法使用时直接报错，而不是把原文发给上游。",
+      "kindsTitle": "个人信息类型",
+      "kindsDescription": "关闭某个类型后不再检测该类型；密钥类信息由上方开关单独控制。",
+      "kindSECRET": "密钥",
+      "kindPERSON": "人名 / 自定义词",
+      "kindPHONE": "电话号码",
+      "kindEMAIL": "邮箱",
+      "kindACCOUNT": "账户信息",
+      "kindADDRESS": "地址",
+      "rulesTitle": "自定义规则",
+      "rulesDescription": "用正则表达式补充内置检测；动作可选占位符、掩码或删除。",
+      "rulesEmpty": "还没有自定义规则。",
+      "rulePatternPlaceholder": "正则，例如 TICKET-[0-9]{6}",
+      "ruleAdd": "添加规则",
+      "ruleRemove": "删除规则",
+      "actionPlaceholder": "占位符",
+      "actionMask": "掩码",
+      "actionDrop": "删除"
     },
     "appConfig": {
       "configDir": "配置目录"

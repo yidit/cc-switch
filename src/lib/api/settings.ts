@@ -82,6 +82,7 @@ export const settingsApi = {
     masked: string;
     hits: number;
     placeholders: number;
+    errors: string[];
   }> {
     return await invoke("preview_redaction", { text });
   },

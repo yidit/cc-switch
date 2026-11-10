@@ -1173,7 +1173,26 @@
       "previewPlaceholder": "貼上一段包含電子郵件、電話或金鑰的文字…",
       "previewButton": "預覽",
       "previewHits": "命中 {{hits}} 處，產生 {{placeholders}} 個佔位符",
-      "proxyOnly": "提示：只有經過 CC Switch 本機代理的請求會被脫敏，直連 provider 的流量不受影響。"
+      "proxyOnly": "提示：只有經過 CC Switch 本機代理的請求會被脫敏，直連 provider 的流量不受影響。",
+      "failClosed": "設定無效時拒絕請求",
+      "failClosedDescription": "自訂規則無法使用時直接報錯，而不是把原文送往上游。",
+      "kindsTitle": "個人資訊類型",
+      "kindsDescription": "關閉某個類型後不再偵測該類型；密鑰類資訊由上方開關單獨控制。",
+      "kindSECRET": "密鑰",
+      "kindPERSON": "人名 / 自訂詞",
+      "kindPHONE": "電話號碼",
+      "kindEMAIL": "電子郵件",
+      "kindACCOUNT": "帳戶資訊",
+      "kindADDRESS": "地址",
+      "rulesTitle": "自訂規則",
+      "rulesDescription": "用正規表達式補充內建偵測；動作可選佔位符、遮罩或刪除。",
+      "rulesEmpty": "還沒有自訂規則。",
+      "rulePatternPlaceholder": "正規表達式，例如 TICKET-[0-9]{6}",
+      "ruleAdd": "新增規則",
+      "ruleRemove": "刪除規則",
+      "actionPlaceholder": "佔位符",
+      "actionMask": "遮罩",
+      "actionDrop": "刪除"
     },
     "appConfig": {
       "configDir": "設定目錄"

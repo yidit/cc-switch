@@ -1172,7 +1172,26 @@
       "previewPlaceholder": "メール、電話番号、キーを含むテキストを貼り付け…",
       "previewButton": "プレビュー",
       "previewHits": "{{hits}} 件ヒット、{{placeholders}} 個のプレースホルダー",
-      "proxyOnly": "注：CC Switch のローカルプロキシ経由のリクエストのみ秘匿化されます。プロバイダーへの直接通信には適用されません。"
+      "proxyOnly": "注：CC Switch のローカルプロキシ経由のリクエストのみ秘匿化されます。プロバイダーへの直接通信には適用されません。",
+      "failClosed": "設定が無効なときはリクエストを拒否",
+      "failClosedDescription": "カスタムルールが使えない場合は、原文を上流に送らずエラーにします。",
+      "kindsTitle": "個人情報の種類",
+      "kindsDescription": "オフにした種類は検出しません。機密情報は上のスイッチで制御します。",
+      "kindSECRET": "シークレット",
+      "kindPERSON": "人名・カスタム語",
+      "kindPHONE": "電話番号",
+      "kindEMAIL": "メールアドレス",
+      "kindACCOUNT": "口座情報",
+      "kindADDRESS": "住所",
+      "rulesTitle": "カスタムルール",
+      "rulesDescription": "組み込みの検出器に正規表現を追加します。動作はプレースホルダー・マスク・削除から選べます。",
+      "rulesEmpty": "カスタムルールはまだありません。",
+      "rulePatternPlaceholder": "正規表現（例: TICKET-[0-9]{6}）",
+      "ruleAdd": "ルールを追加",
+      "ruleRemove": "ルールを削除",
+      "actionPlaceholder": "プレースホルダー",
+      "actionMask": "マスク",
+      "actionDrop": "削除"
     },
     "appConfig": {
       "configDir": "設定ディレクトリ"

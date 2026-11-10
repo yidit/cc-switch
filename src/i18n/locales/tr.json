@@ -1139,7 +1139,26 @@
       "previewPlaceholder": "E-posta, telefon numarası veya anahtar içeren bir metin yapıştırın…",
       "previewButton": "Önizleme",
       "previewHits": "{{hits}} eşleşme, {{placeholders}} yer tutucu",
-      "proxyOnly": "Not: yalnızca CC Switch yerel proxy'sinden geçen istekler gizlenir; doğrudan sağlayıcı trafiği etkilenmez."
+      "proxyOnly": "Not: yalnızca CC Switch yerel proxy'sinden geçen istekler gizlenir; doğrudan sağlayıcı trafiği etkilenmez.",
+      "failClosed": "Yapılandırma geçersizse isteği engelle",
+      "failClosedDescription": "Özel kural kullanılamıyorsa orijinal metni üst akışa göndermek yerine hata döndür.",
+      "kindsTitle": "Kişisel veri türleri",
+      "kindsDescription": "Kapatılan türler artık algılanmaz; gizli bilgiler yukarıdaki anahtarla kontrol edilir.",
+      "kindSECRET": "Gizli bilgiler",
+      "kindPERSON": "İsimler / özel kelimeler",
+      "kindPHONE": "Telefon numaraları",
+      "kindEMAIL": "E-postalar",
+      "kindACCOUNT": "Hesap bilgileri",
+      "kindADDRESS": "Adresler",
+      "rulesTitle": "Özel kurallar",
+      "rulesDescription": "Yerleşik algılayıcılara düzenli ifade ekleyin; her kural yer tutucu, maske veya silme kullanabilir.",
+      "rulesEmpty": "Henüz özel kural yok.",
+      "rulePatternPlaceholder": "Desen, ör. TICKET-[0-9]{6}",
+      "ruleAdd": "Kural ekle",
+      "ruleRemove": "Kuralı sil",
+      "actionPlaceholder": "Yer tutucu",
+      "actionMask": "Maske",
+      "actionDrop": "Sil"
     },
     "appConfig": {
       "configDir": "Yapılandırma dizini"

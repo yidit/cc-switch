@@ -440,6 +440,8 @@ export interface RedactConfig {
   rules: RedactRule[];
   allow: string[];
   failClosed: boolean;
+  /** 占位符派生盐，由后端维护，前端只负责原样回传。 */
+  salt?: string;
 }
 
 export interface Settings {
