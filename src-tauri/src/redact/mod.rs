@@ -7,8 +7,11 @@
 //! - 请求：在最终发送上游前把文本字段中的敏感值替换为占位符；
 //! - 响应：把回复中的占位符还原为原值（流式 SSE 在 Phase 2 接入）。
 
+pub mod detectors;
 pub mod placeholder;
 pub mod types;
+
+use detectors::SecretDetector;
 
 pub use placeholder::PlaceholderTable;
 pub use types::{Action, CustomRule, Hit, Kind, MaskOutcome, RedactConfig};
@@ -31,12 +34,13 @@ pub struct Engine {
 impl Engine {
     /// 按配置构建内置检测器。
     ///
-    /// 目前为空：Phase 1 第 3–4 步再注册具体实现。保留这个入口是为了让
-    /// 调用方与测试不必关心检测器的组装细节。
-    pub fn with_builtin(_config: &RedactConfig) -> Self {
-        Self {
-            detectors: Vec::new(),
+    /// 目前注册密钥/凭据检测器；Phase 1 的后续步骤会加入个人信息检测器。
+    pub fn with_builtin(config: &RedactConfig) -> Self {
+        let mut detectors: Vec<Box<dyn Detector>> = Vec::new();
+        if config.secrets {
+            detectors.push(Box::new(SecretDetector));
         }
+        Self { detectors }
     }
 
     /// 追加一个检测器（测试与后续扩展使用）。
@@ -158,9 +162,12 @@ mod tests {
     }
 
     fn engine(words: &[&str]) -> Engine {
-        Engine::with_builtin(&enabled_config()).with_detector(Box::new(LiteralDetector {
-            words: words.iter().map(|w| w.to_string()).collect(),
-        }))
+        // 直接构造，不注册内置检测器：这一组测试只验证掩码与映射流程。
+        Engine {
+            detectors: vec![Box::new(LiteralDetector {
+                words: words.iter().map(|w| w.to_string()).collect(),
+            })],
+        }
     }
 
     #[test]
@@ -210,5 +217,31 @@ mod tests {
         let outcome = engine(&["abcd", "bc"]).mask_text("abcd", &enabled_config(), &mut table);
         assert_eq!(outcome.placeholders, 1);
         assert_eq!(table.restore(&outcome.text), "abcd");
+    }
+
+    #[test]
+    fn builtin_engine_masks_secrets_when_enabled() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let config = enabled_config();
+        let outcome = Engine::with_builtin(&config).mask_text(
+            "OPENAI_API_KEY=sk-proj-Qm7vT2xLk9RbW4nZpE6sJc8YhD3fGa5uKiN1oVr0",
+            &config,
+            &mut table,
+        );
+        assert!(outcome.text.contains("{{SECRET_"));
+        assert!(!outcome.text.contains("sk-proj-"));
+    }
+
+    #[test]
+    fn builtin_engine_leaves_secrets_when_switched_off() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let config = RedactConfig {
+            enabled: true,
+            secrets: false,
+            ..Default::default()
+        };
+        let text = "DB_PASSWORD=Tr0ub4dor&3xyz";
+        let outcome = Engine::with_builtin(&config).mask_text(text, &config, &mut table);
+        assert_eq!(outcome.text, text);
     }
 }
