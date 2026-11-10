@@ -1,0 +1,214 @@
+//! 请求/响应脱敏引擎。
+//!
+//! 设计参考 magpie（MIT）的 `internal/redact`，但按 CC Switch 的需要重写。
+//! 第一阶段只实现规则层，不引入本地 PII 模型。范围见 `docs/redact/scope.md`。
+//!
+//! 数据流：
+//! - 请求：在最终发送上游前把文本字段中的敏感值替换为占位符；
+//! - 响应：把回复中的占位符还原为原值（流式 SSE 在 Phase 2 接入）。
+
+pub mod placeholder;
+pub mod types;
+
+pub use placeholder::PlaceholderTable;
+pub use types::{Action, CustomRule, Hit, Kind, MaskOutcome, RedactConfig};
+
+/// 检测器：在文本中找出需要脱敏的字节区间。
+///
+/// 实现必须保证返回的区间落在 UTF-8 字符边界上，且 `start < end`。
+pub trait Detector: Send + Sync {
+    fn detect(&self, text: &str, config: &RedactConfig) -> Vec<Hit>;
+}
+
+/// 脱敏引擎。
+///
+/// 检测器在构造时注册；Phase 1 的后续步骤会把密钥、邮箱、手机号等检测器
+/// 加入 [`Engine::with_builtin`]。
+pub struct Engine {
+    detectors: Vec<Box<dyn Detector>>,
+}
+
+impl Engine {
+    /// 按配置构建内置检测器。
+    ///
+    /// 目前为空：Phase 1 第 3–4 步再注册具体实现。保留这个入口是为了让
+    /// 调用方与测试不必关心检测器的组装细节。
+    pub fn with_builtin(_config: &RedactConfig) -> Self {
+        Self {
+            detectors: Vec::new(),
+        }
+    }
+
+    /// 追加一个检测器（测试与后续扩展使用）。
+    pub fn with_detector(mut self, detector: Box<dyn Detector>) -> Self {
+        self.detectors.push(detector);
+        self
+    }
+
+    /// 对一段文本做脱敏。
+    ///
+    /// 相同原值复用同一个占位符；返回的 `hits` 已按位置排序且互不重叠。
+    pub fn mask_text(
+        &self,
+        text: &str,
+        config: &RedactConfig,
+        table: &mut PlaceholderTable,
+    ) -> MaskOutcome {
+        if !config.enabled {
+            return MaskOutcome {
+                text: text.to_string(),
+                hits: Vec::new(),
+                placeholders: 0,
+            };
+        }
+
+        let hits = self.collect_hits(text, config);
+        if hits.is_empty() {
+            return MaskOutcome {
+                text: text.to_string(),
+                hits,
+                placeholders: 0,
+            };
+        }
+
+        let mut out = String::with_capacity(text.len());
+        let mut cursor = 0;
+        let mut placeholders = 0;
+        for hit in &hits {
+            out.push_str(&text[cursor..hit.start]);
+            let value = &text[hit.start..hit.end];
+            out.push_str(&table.placeholder_for(value, hit.kind));
+            placeholders += 1;
+            cursor = hit.end;
+        }
+        out.push_str(&text[cursor..]);
+
+        MaskOutcome {
+            text: out,
+            hits,
+            placeholders,
+        }
+    }
+
+    /// 收集所有检测器的结果，排序并丢弃重叠区间。
+    ///
+    /// 重叠时保留起点更早（同起点则更长）的区间；被它覆盖的短区间会被丢弃。
+    fn collect_hits(&self, text: &str, config: &RedactConfig) -> Vec<Hit> {
+        let mut all = Vec::new();
+        for detector in &self.detectors {
+            all.extend(detector.detect(text, config));
+        }
+
+        all.retain(|hit| hit.start < hit.end && hit.end <= text.len());
+        debug_assert!(
+            all.iter()
+                .all(|hit| text.is_char_boundary(hit.start) && text.is_char_boundary(hit.end)),
+            "检测器返回了非 UTF-8 字符边界的区间"
+        );
+
+        all.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+
+        let mut merged: Vec<Hit> = Vec::with_capacity(all.len());
+        for hit in all {
+            match merged.last() {
+                Some(last) if hit.start < last.end => continue,
+                _ => merged.push(hit),
+            }
+        }
+        merged
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 测试用的字面量检测器：把配置里的每个词当作 PERSON 命中。
+    struct LiteralDetector {
+        words: Vec<String>,
+    }
+
+    impl Detector for LiteralDetector {
+        fn detect(&self, text: &str, _config: &RedactConfig) -> Vec<Hit> {
+            let mut hits = Vec::new();
+            for word in &self.words {
+                if word.is_empty() {
+                    continue;
+                }
+                let mut from = 0;
+                while let Some(pos) = text[from..].find(word.as_str()) {
+                    let start = from + pos;
+                    hits.push(Hit {
+                        start,
+                        end: start + word.len(),
+                        kind: Kind::Person,
+                    });
+                    from = start + word.len();
+                }
+            }
+            hits
+        }
+    }
+
+    fn enabled_config() -> RedactConfig {
+        RedactConfig {
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    fn engine(words: &[&str]) -> Engine {
+        Engine::with_builtin(&enabled_config()).with_detector(Box::new(LiteralDetector {
+            words: words.iter().map(|w| w.to_string()).collect(),
+        }))
+    }
+
+    #[test]
+    fn disabled_engine_returns_text_unchanged() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let config = RedactConfig::default();
+        let outcome = engine(&["secret"]).mask_text("a secret value", &config, &mut table);
+        assert_eq!(outcome.text, "a secret value");
+        assert!(outcome.hits.is_empty());
+    }
+
+    #[test]
+    fn masks_and_restores_a_simple_value() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let outcome = engine(&["secret"]).mask_text("a secret value", &enabled_config(), &mut table);
+
+        assert_eq!(outcome.placeholders, 1);
+        assert!(!outcome.text.contains("secret"));
+        assert!(outcome.text.starts_with("a {{PERSON_"));
+
+        let restored = table.restore(&outcome.text);
+        assert_eq!(restored, "a secret value");
+    }
+
+    #[test]
+    fn same_value_reuses_the_same_placeholder() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let outcome = engine(&["secret"]).mask_text("secret and secret", &enabled_config(), &mut table);
+        let mut parts = outcome.text.split(" and ");
+        assert_eq!(parts.next().unwrap(), parts.next().unwrap());
+    }
+
+    #[test]
+    fn keeps_utf8_boundaries() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let input = "密码是 secret，请勿泄露";
+        let outcome = engine(&["secret"]).mask_text(input, &enabled_config(), &mut table);
+
+        assert!(outcome.text.starts_with("密码是 {{PERSON_"));
+        assert!(outcome.text.ends_with("，请勿泄露"));
+        assert_eq!(table.restore(&outcome.text), input);
+    }
+
+    #[test]
+    fn drops_overlapping_hits_in_favor_of_the_first() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let outcome = engine(&["abcd", "bc"]).mask_text("abcd", &enabled_config(), &mut table);
+        assert_eq!(outcome.placeholders, 1);
+        assert_eq!(table.restore(&outcome.text), "abcd");
+    }
+}
