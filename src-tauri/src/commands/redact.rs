@@ -51,12 +51,18 @@ fn preview(text: &str) -> Result<RedactPreviewResult, String> {
         None
     };
 
-    let extra = match &model {
+    let (extra, used_model) = match &model {
         Some(model) => {
             let mut budget = config.model.max_tokens_per_request;
-            model.detect(text, &config, &mut budget)
+            match model.detect(text, &config, &mut budget) {
+                Ok(hits) => (hits, true),
+                Err(error) => {
+                    errors.push(format!("本地模型推理失败：{error}"));
+                    (Vec::new(), false)
+                }
+            }
         }
-        None => Vec::new(),
+        None => (Vec::new(), false),
     };
 
     let outcome = engine.mask_text_with(text, &config, &mut table, &extra);
@@ -66,7 +72,7 @@ fn preview(text: &str) -> Result<RedactPreviewResult, String> {
         hits: outcome.hits.len(),
         placeholders: outcome.placeholders,
         errors,
-        used_model: model.is_some(),
+        used_model,
     })
 }
 

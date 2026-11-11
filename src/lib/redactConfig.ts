@@ -8,7 +8,13 @@ import type { RedactConfig, RedactKind, RedactRule } from "@/types";
  */
 
 /** 受 `kinds` 控制的个人信息类型。 */
-export const PERSONAL_KINDS = ["EMAIL", "PHONE", "ACCOUNT"] as const;
+export const PERSONAL_KINDS = [
+  "EMAIL",
+  "PHONE",
+  "ACCOUNT",
+  "PERSON",
+  "ADDRESS",
+] as const;
 
 export type PersonalKind = (typeof PERSONAL_KINDS)[number];
 
@@ -18,6 +24,7 @@ export const REDACT_KINDS: RedactKind[] = [
   "PHONE",
   "EMAIL",
   "ACCOUNT",
+  "ADDRESS",
 ];
 
 export const REDACT_ACTIONS = ["placeholder", "mask", "drop"] as const;

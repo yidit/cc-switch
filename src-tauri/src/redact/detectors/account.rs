@@ -24,6 +24,9 @@ impl Detector for AccountDetector {
         let mut hits = Vec::new();
         for rule in rules() {
             for found in rule.regex.find_iter(text) {
+                if !has_boundaries(text, found.start(), found.end()) {
+                    continue;
+                }
                 let value = found.as_str();
                 if !(rule.validate)(value) {
                     continue;
@@ -53,18 +56,18 @@ fn rules() -> &'static [Rule] {
         vec![
             // 4-4-4-4 分组的银行卡号。
             Rule {
-                regex: Regex::new(r"\b(?:\d{4}[ -]){3}\d{4}\b").expect("银行卡正则应始终合法"),
+                regex: Regex::new(r"(?:\d{4}[ -]){3}\d{4}").expect("银行卡正则应始终合法"),
                 validate: luhn,
             },
             // IBAN：国家代码 + 校验位 + 分段；可带空格或连写。
             Rule {
-                regex: Regex::new(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{1,4}){2,8}\b")
+                regex: Regex::new(r"[A-Z]{2}\d{2}(?: ?[A-Z0-9]{1,4}){2,8}")
                     .expect("IBAN 正则应始终合法"),
                 validate: valid_iban,
             },
             // 中国大陆 18 位身份证号。
             Rule {
-                regex: Regex::new(r"\b\d{17}[\dXx]\b").expect("身份证正则应始终合法"),
+                regex: Regex::new(r"\d{17}[\dXx]").expect("身份证正则应始终合法"),
                 validate: valid_id_card,
             },
         ]
@@ -73,6 +76,20 @@ fn rules() -> &'static [Rule] {
 
 fn kind_enabled(config: &RedactConfig, kind: Kind) -> bool {
     config.kinds.is_empty() || config.kinds.contains(&kind)
+}
+
+/// 号码两端不能紧邻 ASCII 字母、数字或下划线。
+///
+/// Rust 的 `\b` 是 Unicode 词边界，中文也算词字符，`身份证110105…` 会因此
+/// 匹配不到；这里只把 ASCII 词字符当作边界，中文相邻仍按独立号码处理。
+fn has_boundaries(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].chars().next_back();
+    let after = text[end..].chars().next();
+    !before.is_some_and(is_ascii_word) && !after.is_some_and(is_ascii_word)
+}
+
+fn is_ascii_word(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 /// Luhn 校验；同时要求至少 13 位数字。
@@ -177,6 +194,15 @@ mod tests {
             detect("身份证号 11010519491231002X，开户行"),
             vec!["11010519491231002X"]
         );
+    }
+
+    #[test]
+    fn detects_id_card_next_to_chinese_text() {
+        assert_eq!(
+            detect("身份证11010519491231002X"),
+            vec!["11010519491231002X"],
+        );
+        assert!(detect("id11010519491231002Xabc").is_empty());
     }
 
     #[test]

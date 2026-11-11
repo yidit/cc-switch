@@ -55,10 +55,10 @@ pub fn mask_json(
     config: &RedactConfig,
     table: &mut PlaceholderTable,
     model: Option<&ModelEngine>,
-) -> JsonMaskStats {
+) -> Result<JsonMaskStats, String> {
     let mut stats = JsonMaskStats::default();
     if !config.enabled {
-        return stats;
+        return Ok(stats);
     }
 
     let model_hits = match model {
@@ -73,7 +73,7 @@ pub fn mask_json(
                 if budget == 0 {
                     break;
                 }
-                let found = model.detect(text, config, &mut budget);
+                let found = model.detect(text, config, &mut budget)?;
                 if !found.is_empty() {
                     hits.insert(index, found);
                 }
@@ -94,7 +94,7 @@ pub fn mask_json(
         model_hits.as_ref(),
         &mut index,
     );
-    stats
+    Ok(stats)
 }
 
 fn collect_strings(value: &Value, key: Option<&str>, out: &mut Vec<String>) {
@@ -215,7 +215,8 @@ fn looks_like_encoded_payload(text: &str) -> bool {
         return false;
     }
 
-    let body = if text.starts_with("data:") {
+    let is_data_url = text.starts_with("data:");
+    let body = if is_data_url {
         text.split_once(',').map_or(text, |(_, body)| body)
     } else {
         text
@@ -224,19 +225,27 @@ fn looks_like_encoded_payload(text: &str) -> bool {
         return false;
     }
 
+    // 统计全部字符，而不是遇到不认识的字符就直接返回：`.env`、配置块里的
+    // 键值也只由字母数字和 `= _ -` 组成，必须靠比例和空白规则把它们排除。
     let mut allowed = 0usize;
     let mut total = 0usize;
+    let mut has_whitespace = false;
     for ch in body.chars() {
         total += 1;
-        if ch.is_ascii_alphanumeric()
-            || matches!(ch, '+' | '/' | '=' | '-' | '_' | '\n' | '\r' | ' ')
-        {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_') {
             allowed += 1;
-        } else {
-            return false;
+        }
+        if ch.is_whitespace() {
+            has_whitespace = true;
         }
     }
-    total > 0 && allowed * 100 >= total * 98
+    if total == 0 || allowed * 100 < total * 98 {
+        return false;
+    }
+
+    // data URL 允许带换行；其他文本只有「完全没有空白」时才算编码数据，
+    // 否则多行 .env、密钥配置这类同样只含安全字符的文本会被整段跳过。
+    is_data_url || !has_whitespace
 }
 
 #[cfg(test)]
@@ -266,7 +275,8 @@ mod tests {
             ]
         });
 
-        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
+        let stats =
+            mask_json(&mut value, &engine, &config, &mut table, None).expect("脱敏不应失败");
 
         assert_eq!(stats.hits, 2);
         assert!(value["content"][0]["text"]
@@ -291,7 +301,7 @@ mod tests {
         });
         let mut value = original.clone();
 
-        mask_json(&mut value, &engine, &config, &mut table, None);
+        mask_json(&mut value, &engine, &config, &mut table, None).expect("脱敏不应失败");
         let restored_count = restore_json(&mut value, &table);
 
         assert_eq!(restored_count, 2);
@@ -305,7 +315,8 @@ mod tests {
         let payload = format!("data:image/png;base64,{}", "A".repeat(4096));
         let mut value = json!({"content": payload});
 
-        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
+        let stats =
+            mask_json(&mut value, &engine, &config, &mut table, None).expect("脱敏不应失败");
 
         assert_eq!(stats.strings, 0, "base64 负载不应参与脱敏");
         assert_eq!(
@@ -316,13 +327,31 @@ mod tests {
     }
 
     #[test]
+    fn masks_env_style_blocks() {
+        let (engine, config) = engine_and_config();
+        let mut table = PlaceholderTable::with_seed(7);
+        let key = format!("{}{}", "AIza", "SyA1234567890abcdefghijklmnopqrstuv");
+        let text = (0..80)
+            .map(|index| format!("SERVICE_{index}_TOKEN={key}\n"))
+            .collect::<String>();
+        let mut value = json!({"content": text});
+
+        let stats =
+            mask_json(&mut value, &engine, &config, &mut table, None).expect("脱敏不应失败");
+
+        assert_eq!(stats.strings, 1, ".env 风格的配置块应参与脱敏");
+        assert!(value["content"].as_str().unwrap().contains("{{SECRET_"));
+    }
+
+    #[test]
     fn long_prose_is_still_masked() {
         let (engine, config) = engine_and_config();
         let mut table = PlaceholderTable::with_seed(7);
         let text = "这是一段普通文本，包含邮箱 jane.smith@gmail.com。".repeat(100);
         let mut value = json!({"content": text});
 
-        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
+        let stats =
+            mask_json(&mut value, &engine, &config, &mut table, None).expect("脱敏不应失败");
 
         assert_eq!(stats.strings, 1);
         assert!(value["content"].as_str().unwrap().contains("{{EMAIL_"));
@@ -335,7 +364,8 @@ mod tests {
         // 即使值看起来像密钥，结构化字段也不处理。
         let mut value = json!({"type": "sk-proj-Qm7vT2xLk9RbW4nZpE6sJc8YhD3fGa5uKiN1oVr0"});
 
-        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
+        let stats =
+            mask_json(&mut value, &engine, &config, &mut table, None).expect("脱敏不应失败");
 
         assert_eq!(stats.strings, 0);
         assert!(value["type"].as_str().unwrap().starts_with("sk-proj-"));
@@ -349,7 +379,8 @@ mod tests {
         let original = json!({"text": "mail jane.smith@gmail.com"});
         let mut value = original.clone();
 
-        let stats = mask_json(&mut value, &engine, &config, &mut table, None);
+        let stats =
+            mask_json(&mut value, &engine, &config, &mut table, None).expect("脱敏不应失败");
 
         assert_eq!(stats, JsonMaskStats::default());
         assert_eq!(value, original);

@@ -84,6 +84,9 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
   const [modelStatus, setModelStatus] = useState<RedactModelStatus | null>(
     null,
   );
+  // 用户点了「启用本地模型」但文件还没就绪：等下载完成后再真正打开开关，
+  // 避免 failClosed 下把请求全部拒绝。
+  const [pendingModelEnable, setPendingModelEnable] = useState(false);
   const [thresholdDraft, setThresholdDraft] = useState(
     String(redact.model.threshold),
   );
@@ -110,6 +113,13 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
     return () => window.clearInterval(timer);
   }, [modelStatus?.state]);
 
+  // 等模型文件就绪后再打开开关。
+  useEffect(() => {
+    if (!pendingModelEnable || modelStatus?.state !== "ready") return;
+    setPendingModelEnable(false);
+    update({ model: { ...redact.model, enabled: true } });
+  }, [pendingModelEnable, modelStatus?.state]);
+
   useEffect(() => {
     setThresholdDraft(String(redact.model.threshold));
   }, [redact.model.threshold]);
@@ -135,8 +145,10 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
   };
 
   const commitRules = (rules: RedactRule[]) => {
-    setRuleDrafts(rules);
-    update({ rules });
+    // 空正则只是「刚添加、还没填」，不落盘：默认 failClosed 下后端会拒绝所有请求。
+    const filled = rules.filter((rule) => rule.pattern.trim() !== "");
+    setRuleDrafts(filled);
+    update({ rules: filled });
   };
 
   const patchRule = (index: number, patch: Partial<RedactRule>) => {
@@ -157,7 +169,11 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
   };
 
   const addRule = () => {
-    commitRules([...ruleDrafts, createRule(redact)]);
+    // 先只放在本地草稿里，失焦且填了内容才保存。
+    setRuleDrafts((current) => [
+      ...current,
+      createRule({ ...redact, rules: current }),
+    ]);
   };
 
   const deleteRule = (index: number) => {
@@ -188,11 +204,21 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
   };
 
   const toggleModel = (value: boolean) => {
-    update({ model: { ...redact.model, enabled: value } });
-    // 打开时如果模型还没下载，直接开始下载。
-    if (value && modelStatus?.state === "missing") {
-      void startModelDownload();
+    if (!value) {
+      setPendingModelEnable(false);
+      update({ model: { ...redact.model, enabled: false } });
+      return;
     }
+    // 模型文件没就绪时先不打开开关：failClosed 下每个请求都会失败。
+    // 记录用户的意图，下载完成后再自动打开。
+    if (modelStatus?.state !== "ready") {
+      setPendingModelEnable(true);
+      if (modelStatus?.state !== "downloading") {
+        void startModelDownload();
+      }
+      return;
+    }
+    update({ model: { ...redact.model, enabled: true } });
   };
 
   const commitThreshold = () => {

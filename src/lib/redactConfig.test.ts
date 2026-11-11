@@ -52,9 +52,16 @@ describe("个人信息类型开关", () => {
 
   it("关闭一个类型后只保留其余类型", () => {
     const config = withKindEnabled(makeConfig(), "PHONE", false);
-    expect(config.kinds).toEqual(["EMAIL", "ACCOUNT"]);
+    expect(config.kinds).toEqual(["EMAIL", "ACCOUNT", "PERSON", "ADDRESS"]);
     expect(isKindEnabled(config, "PHONE")).toBe(false);
     expect(isKindEnabled(config, "EMAIL")).toBe(true);
+  });
+
+  it("关闭 PERSON 时只影响人名", () => {
+    const config = withKindEnabled(makeConfig(), "PERSON", false);
+    expect(config.kinds).toEqual(["EMAIL", "PHONE", "ACCOUNT", "ADDRESS"]);
+    expect(isKindEnabled(config, "PERSON")).toBe(false);
+    expect(isKindEnabled(config, "ADDRESS")).toBe(true);
   });
 
   it("重新打开全部类型时写回空数组", () => {
@@ -64,13 +71,16 @@ describe("个人信息类型开关", () => {
   });
 
   it("关闭最后一个类型时同时关闭个人信息开关", () => {
-    const withoutPhone = withKindEnabled(makeConfig(), "PHONE", false);
-    const onlyEmail = withKindEnabled(withoutPhone, "ACCOUNT", false);
-    const none = withKindEnabled(onlyEmail, "EMAIL", false);
+    let config = makeConfig();
+    for (const kind of PERSONAL_KINDS) {
+      config = withKindEnabled(config, kind, false);
+    }
 
-    expect(none.personal).toBe(false);
-    expect(none.kinds).toEqual([]);
-    expect(isKindEnabled(none, "EMAIL")).toBe(false);
+    expect(config.personal).toBe(false);
+    expect(config.kinds).toEqual([]);
+    for (const kind of PERSONAL_KINDS) {
+      expect(isKindEnabled(config, kind)).toBe(false);
+    }
   });
 
   it("重新打开类型会同时打开个人信息开关", () => {

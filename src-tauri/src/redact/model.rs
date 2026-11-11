@@ -156,49 +156,65 @@ impl ModelEngine {
     /// 在文本中找出模型认为需要脱敏的区间。
     ///
     /// `budget` 是本请求剩余的 token 预算，从文本末尾（最新内容）开始消耗。
-    pub fn detect(&self, text: &str, config: &RedactConfig, budget: &mut usize) -> Vec<Hit> {
+    /// 推理失败（运行时错误、输出异常）返回 `Err`，由调用方按 `failClosed`
+    /// 决定拒绝请求还是退回规则层；预算不足导致的中途停止不算失败，只是结果不完整。
+    pub fn detect(
+        &self,
+        text: &str,
+        config: &RedactConfig,
+        budget: &mut usize,
+    ) -> Result<Vec<Hit>, String> {
         if *budget == 0 || text.trim().is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let threshold = config.model.threshold.clamp(0.05, 0.99);
         let key = cache_key(text, threshold);
         if let Some(hits) = self.cache.lock().ok().and_then(|cache| cache.get(&key)) {
-            return filter_by_config(&hits, config);
+            return Ok(filter_by_config(&hits, config));
         }
 
+        let (hits, complete) = self.infer(text, threshold, budget)?;
+
+        // 只缓存完整推理的结果：预算不足时提前停止的命中不完整，缓存下来会让
+        // 这段文本在后续请求里永远拿到残缺结果。
         // 缓存未过滤的原始命中：类型开关随时可能变化，过滤放在读取时做，
         // 否则先只开 EMAIL 跑过的文本会一直缺人名/地址的命中。
-        let hits = self.infer(text, threshold, budget).collect::<Vec<_>>();
-
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.insert(key, hits.clone());
+        if complete {
+            if let Ok(mut cache) = self.cache.lock() {
+                cache.insert(key, hits.clone());
+            }
         }
-        filter_by_config(&hits, config)
+        Ok(filter_by_config(&hits, config))
     }
 
-    fn infer(&self, text: &str, threshold: f32, budget: &mut usize) -> impl Iterator<Item = Hit> {
+    /// 推理整段文本；第二个返回值表示是否处理完了所有窗口。
+    fn infer(
+        &self,
+        text: &str,
+        threshold: f32,
+        budget: &mut usize,
+    ) -> Result<(Vec<Hit>, bool), String> {
         let mut hits: Vec<Hit> = Vec::new();
 
-        let Ok(encoding) = self.tokenizer.encode(text, false) else {
-            log::warn!("[redact] 模型分词失败，跳过该段文本");
-            return hits.into_iter();
-        };
+        let encoding = self
+            .tokenizer
+            .encode(text, false)
+            .map_err(|error| format!("模型分词失败：{error}"))?;
         let ids = encoding.get_ids();
         let offsets = encoding.get_offsets();
         if ids.is_empty() || ids.len() != offsets.len() {
-            return hits.into_iter();
+            return Ok((Vec::new(), true));
         }
 
         let Some(cls_id) = self.tokenizer.token_to_id("<s>") else {
-            log::warn!("[redact] tokenizer 缺少 <s>，跳过模型推理");
-            return hits.into_iter();
+            return Err("tokenizer 缺少 <s>，无法推理".to_string());
         };
         let sep_id = self.tokenizer.token_to_id("</s>").unwrap_or(cls_id);
 
         for (start, end) in window_plan(ids.len()).into_iter() {
             if *budget < 2 {
-                break;
+                return Ok((merge_hits(hits), false));
             }
             let content = &ids[start..end];
             let mut window: Vec<i64> = Vec::with_capacity(content.len() + 2);
@@ -207,19 +223,17 @@ impl ModelEngine {
             window.push(i64::from(sep_id));
 
             let processed = window.len();
-            let Some(scores) = self.run_window(&window) else {
-                break;
-            };
+            let scores = self.run_window(&window)?;
             decode_window(&scores, start, end, offsets, threshold, &mut hits);
 
             *budget = budget.saturating_sub(processed);
         }
 
-        merge_hits(hits).into_iter()
+        Ok((merge_hits(hits), true))
     }
 
     /// 跑一个窗口，返回每个 token 的最高置信度与标签下标。
-    fn run_window(&self, ids: &[i64]) -> Option<Vec<(usize, f32)>> {
+    fn run_window(&self, ids: &[i64]) -> Result<Vec<(usize, f32)>, String> {
         let len = ids.len();
         let input_ids = Array2::from_shape_vec((1, len), ids.to_vec()).expect("窗口长度与输入一致");
         let attention =
@@ -227,21 +241,29 @@ impl ModelEngine {
         let token_types =
             Array2::from_shape_vec((1, len), vec![0i64; len]).expect("窗口长度与输入一致");
 
-        let mut session = self.session.lock().ok()?;
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| "模型会话锁已损坏".to_string())?;
         let outputs = session
             .run(ort::inputs![
-                "input_ids" => Tensor::from_array(input_ids).ok()?,
-                "attention_mask" => Tensor::from_array(attention).ok()?,
-                "token_type_ids" => Tensor::from_array(token_types).ok()?,
+                "input_ids" => Tensor::from_array(input_ids).map_err(|error| format!("构造模型输入失败：{error}"))?,
+                "attention_mask" => Tensor::from_array(attention).map_err(|error| format!("构造模型输入失败：{error}"))?,
+                "token_type_ids" => Tensor::from_array(token_types).map_err(|error| format!("构造模型输入失败：{error}"))?,
             ])
-            .ok()?;
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>().ok()?;
+            .map_err(|error| format!("模型推理失败：{error}"))?;
+        let (shape, data) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|error| format!("模型输出解析失败：{error}"))?;
 
-        let tokens = *shape.get(1)? as usize;
-        let classes = *shape.get(2)? as usize;
+        let tokens = *shape
+            .get(1)
+            .ok_or_else(|| format!("模型输出维度不足：{shape:?}"))? as usize;
+        let classes = *shape
+            .get(2)
+            .ok_or_else(|| format!("模型输出维度不足：{shape:?}"))? as usize;
         if tokens != len || classes != LABELS.len() {
-            log::warn!("[redact] 模型输出形状异常：{shape:?}");
-            return None;
+            return Err(format!("模型输出形状异常：{shape:?}"));
         }
 
         let mut result = Vec::with_capacity(tokens);
@@ -258,7 +280,7 @@ impl ModelEngine {
             let sum: f32 = logits.iter().map(|&logit| (logit - best_logit).exp()).sum();
             result.push((best, 1.0 / sum));
         }
-        Some(result)
+        Ok(result)
     }
 }
 

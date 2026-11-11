@@ -55,13 +55,44 @@ pub fn mask_request_body(
     };
 
     // 配置了盐值时按盐值计算占位符，不同请求之间保持一致；旧配置没有盐值时，每次请求随机。
-    let mut table = PlaceholderTable::from_config(config);
-    let stats = mask_json(body, &engine, config, &mut table, model.as_deref());
+    let table = PlaceholderTable::from_config(config);
+    let (stats, table) = match run_mask(body, &engine, config, table, model.as_deref()) {
+        Ok(result) => result,
+        Err(error) => {
+            if config.fail_closed {
+                return Err(format!("本地脱敏模型推理失败：{error}"));
+            }
+            // 模型在扫描阶段失败时请求体还没有被改动，退回到只跑规则层。
+            log::warn!("本地脱敏模型推理失败，本次只使用规则层：{error}");
+            run_mask(
+                body,
+                &engine,
+                config,
+                PlaceholderTable::from_config(config),
+                None,
+            )?
+        }
+    };
 
     if stats.placeholders == 0 && stats.hits == 0 {
         return Ok(None);
     }
     Ok(Some(Arc::new(table)))
+}
+
+/// 跑一遍脱敏，返回统计与写入了占位符的表。
+///
+/// 单独抽出来是为了在模型推理失败时能用一张干净的表重跑规则层：`mask_json`
+/// 在扫描阶段（模型推理）还没改动请求体，失败后重跑不会留下半成品。
+fn run_mask(
+    body: &mut Value,
+    engine: &Engine,
+    config: &RedactConfig,
+    mut table: PlaceholderTable,
+    model: Option<&crate::redact::ModelEngine>,
+) -> Result<(crate::redact::json::JsonMaskStats, PlaceholderTable), String> {
+    let stats = mask_json(body, engine, config, &mut table, model)?;
+    Ok((stats, table))
 }
 
 /// 还原非流式响应体。
@@ -103,19 +134,42 @@ pub fn restore_stream_chunk(
     let mut buffer = std::mem::take(pending);
     buffer.extend_from_slice(chunk);
 
-    // chunk 可能切在多字节字符中间：只处理合法前缀，把不完整字符留在 pending。
-    let valid_len = match std::str::from_utf8(&buffer) {
-        Ok(text) => text.len(),
-        Err(error) => error.valid_up_to(),
-    };
-    let text = std::str::from_utf8(&buffer[..valid_len]).expect("valid_up_to 之前必然是合法 UTF-8");
-
-    let keep_from = incomplete_placeholder_start(text);
-    let restored = table.restore(&text[..keep_from]);
-    let tail = buffer[keep_from..].to_vec();
-
-    pending.extend_from_slice(&tail);
-    restored.into_bytes()
+    let mut restored = Vec::with_capacity(buffer.len());
+    let mut rest: &[u8] = &buffer;
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(text) => {
+                let keep_from = incomplete_placeholder_start(text);
+                restored.extend_from_slice(table.restore(&text[..keep_from]).as_bytes());
+                pending.extend_from_slice(&rest[keep_from..]);
+                return restored;
+            }
+            Err(error) => {
+                let valid_len = error.valid_up_to();
+                let tail = &rest[valid_len..];
+                match error.error_len() {
+                    // 多字节字符被 chunk 截断：只处理合法前缀，尾部留到下一次。
+                    None => {
+                        let text = std::str::from_utf8(&rest[..valid_len])
+                            .expect("valid_up_to 之前必然是合法 UTF-8");
+                        let keep_from = incomplete_placeholder_start(text);
+                        restored.extend_from_slice(table.restore(&text[..keep_from]).as_bytes());
+                        pending.extend_from_slice(&rest[keep_from..]);
+                        return restored;
+                    }
+                    // 真正的非法字节：它不可能是占位符的一部分，原样输出后继续处理
+                    // 后面的字节；否则非法字节会一直留在 pending 开头，后续内容全部被积压。
+                    Some(len) => {
+                        let text = std::str::from_utf8(&rest[..valid_len])
+                            .expect("valid_up_to 之前必然是合法 UTF-8");
+                        restored.extend_from_slice(table.restore(text).as_bytes());
+                        restored.extend_from_slice(&tail[..len]);
+                        rest = &tail[len..];
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// 流结束时把 `pending` 里剩余的内容还原并返回。
@@ -340,6 +394,28 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "jane.smith@gmail.com中",
             "切在多字节字符中间时也要还原完整的占位符"
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn passes_invalid_utf8_bytes_through_without_stalling() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let placeholder = table.placeholder_for("{{EMAIL_hw4nuhim}}", crate::redact::Kind::Email);
+
+        let mut pending = Vec::new();
+        let mut out = restore_stream_chunk(&table, &mut pending, &[b'x', 0xff]);
+        assert_eq!(out, vec![b'x', 0xff], "非法字节应原样输出");
+        assert!(pending.is_empty(), "非法字节不能留在缓冲区");
+
+        out.extend(restore_stream_chunk(
+            &table,
+            &mut pending,
+            placeholder.as_bytes(),
+        ));
+        assert_eq!(
+            String::from_utf8(out[2..].to_vec()).unwrap(),
+            "{{EMAIL_hw4nuhim}}"
         );
         assert!(pending.is_empty());
     }

@@ -24,6 +24,9 @@ impl Detector for PhoneDetector {
         let mut hits = Vec::new();
         for regex in regexes() {
             for found in regex.find_iter(text) {
+                if !has_phone_boundaries(text, found.start(), found.end()) {
+                    continue;
+                }
                 if !plausible_phone(found.as_str()) {
                     continue;
                 }
@@ -60,13 +63,13 @@ fn regexes() -> &'static [Regex] {
     RES.get_or_init(|| {
         [
             // 415-555-0132 / 415 555 0132 / 90-1234-5678 / 139 1234 5678
-            r"\b\d{2,4}[- ]\d{3,4}[- ]\d{3,4}\b",
+            r"\d{2,4}[- ]\d{3,4}[- ]\d{3,4}",
             // 555-0199 / 555 0199
-            r"\b\d{3}[- ]\d{4}\b",
+            r"\d{3}[- ]\d{4}",
             // 7700 900123
-            r"\b\d{4} \d{6}\b",
+            r"\d{4} \d{6}",
             // 中国大陆手机号（11 位，1 开头，第二位 3-9）
-            r"\b1[3-9]\d{9}\b",
+            r"1[3-9]\d{9}",
         ]
         .iter()
         .map(|pattern| Regex::new(pattern).expect("电话正则应始终合法"))
@@ -76,6 +79,20 @@ fn regexes() -> &'static [Regex] {
 
 fn kind_enabled(config: &RedactConfig, kind: Kind) -> bool {
     config.kinds.is_empty() || config.kinds.contains(&kind)
+}
+
+/// 号码两端不能紧邻 ASCII 字母、数字或下划线。
+///
+/// Rust 的 `\b` 是 Unicode 词边界，中文也算词字符，`我的手机13800138000`
+/// 因此匹配不到；这里只把 ASCII 词字符当作边界，中文相邻仍按独立号码处理。
+fn has_phone_boundaries(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].chars().next_back();
+    let after = text[end..].chars().next();
+    !before.is_some_and(is_ascii_word) && !after.is_some_and(is_ascii_word)
+}
+
+fn is_ascii_word(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 fn plausible_phone(value: &str) -> bool {
@@ -122,6 +139,16 @@ mod tests {
         assert_eq!(detect("zip 555-0199"), vec!["555-0199"]);
         assert_eq!(detect("手机 13800138000"), vec!["13800138000"]);
         assert_eq!(detect("Call +1 415-555-0132"), vec!["415-555-0132"]);
+    }
+
+    #[test]
+    fn detects_numbers_next_to_chinese_text() {
+        assert_eq!(detect("我的手机13800138000。"), vec!["13800138000"]);
+    }
+
+    #[test]
+    fn ignores_numbers_embedded_in_ascii_identifiers() {
+        assert!(detect("token13800138000abc").is_empty());
     }
 
     #[test]

@@ -36,7 +36,11 @@ impl WordDetector {
 }
 
 impl Detector for WordDetector {
-    fn detect(&self, text: &str, _config: &RedactConfig) -> Vec<Hit> {
+    fn detect(&self, text: &str, config: &RedactConfig) -> Vec<Hit> {
+        // 词按 PERSON 记录，因此受「个人信息」与 PERSON 类型开关控制。
+        if !config.personal || !kind_enabled(config, Kind::Person) {
+            return Vec::new();
+        }
         let mut hits = Vec::new();
         for regex in &self.patterns {
             for found in regex.find_iter(text) {
@@ -50,6 +54,11 @@ impl Detector for WordDetector {
         }
         hits
     }
+}
+
+/// 配置里的 `kinds` 是否允许该类型；空列表表示全部允许。
+fn kind_enabled(config: &RedactConfig, kind: Kind) -> bool {
+    config.kinds.is_empty() || config.kinds.contains(&kind)
 }
 
 #[cfg(test)]

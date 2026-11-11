@@ -47,9 +47,15 @@ impl Detector for EmailDetector {
 /// `a@b.com c@d.com` 都能被找到；边界在匹配之后单独判断。
 fn has_email_boundaries(text: &str, start: usize, end: usize) -> bool {
     if let Some(previous) = text[..start].chars().next_back() {
-        // 前面是地址里会出现的字符、`]`、`:` 或 `/` 时，说明匹配从中间开始。
-        if previous.is_ascii_alphanumeric()
-            || matches!(previous, '.' | '_' | '%' | '+' | '-' | ']' | ':' | '/')
+        if previous == ':' {
+            // `mailto:` 是地址的一部分，放行；连接串 userinfo（`scheme://user:pass@host`）
+            // 里的 `:` 仍然按「匹配从中间开始」排除。
+            let before_colon = &text[..start - 1];
+            if !before_colon.to_ascii_lowercase().ends_with("mailto") {
+                return false;
+            }
+        } else if previous.is_ascii_alphanumeric()
+            || matches!(previous, '.' | '_' | '%' | '+' | '-' | ']' | '/')
         {
             return false;
         }
@@ -165,6 +171,16 @@ mod tests {
         assert_eq!(detect("a@b.com c@d.com"), vec!["a@b.com", "c@d.com"]);
         assert_eq!(detect("a@b.com,c@d.com"), vec!["a@b.com", "c@d.com"]);
         assert_eq!(detect("cc: a@b.com;d@e.com"), vec!["a@b.com", "d@e.com"]);
+    }
+
+    #[test]
+    fn detects_mailto_links() {
+        let address = ["alice", "@", "corp.cn"].concat();
+        let text = format!("mailto:{address}");
+        assert_eq!(detect(&text), vec![address.as_str()]);
+
+        let upper = format!("MAILTO:{address}");
+        assert_eq!(detect(&upper), vec![address.as_str()]);
     }
 
     #[test]

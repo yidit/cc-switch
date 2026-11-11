@@ -21,6 +21,7 @@ impl CustomRuleDetector {
     pub fn new(rules: &[CustomRule]) -> Self {
         let rules = rules
             .iter()
+            .filter(|rule| !rule.pattern.trim().is_empty())
             .filter_map(|rule| match compile(rule) {
                 Ok(regex) => Some(CompiledRule {
                     regex,
@@ -63,11 +64,14 @@ impl RuleError {
 
 /// 列出配置里无法使用的规则。
 ///
-/// 引擎只跳过无效规则并告警；`failClosed` 开启时，调用方应据此拒绝请求，
+/// 空正则代表「刚添加、还没填」，不算错误：默认 `failClosed` 下把它当无效规则
+/// 会让用户点一下「添加规则」就拒绝所有请求。空规则由引擎直接跳过。
+/// 无法编译的正则仍会列出；`failClosed` 开启时，调用方应据此拒绝请求，
 /// 避免用户以为敏感信息已被处理、实际上原文被发了出去。
 pub fn invalid_rules(rules: &[CustomRule]) -> Vec<String> {
     rules
         .iter()
+        .filter(|rule| !rule.pattern.trim().is_empty())
         .filter_map(|rule| compile(rule).err().map(|error| error.message(&rule.name)))
         .collect()
 }
@@ -128,14 +132,14 @@ mod tests {
     }
 
     #[test]
-    fn reports_empty_and_uncompilable_rules() {
+    fn reports_uncompilable_rules_and_ignores_empty_ones() {
         let messages = invalid_rules(&[
             rule("(", Kind::Secret, Action::Placeholder),
             rule("   ", Kind::Secret, Action::Placeholder),
             rule(r"\d+", Kind::Secret, Action::Placeholder),
         ]);
 
-        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert_eq!(messages.len(), 1, "{messages:?}");
         assert!(messages[0].contains("规则 test"));
     }
 }
