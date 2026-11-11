@@ -71,7 +71,7 @@ pub use codex::{
     provider_needs_responses_late_arguments_repair, provider_needs_responses_namespace_flatten,
     resolve_codex_catalog_tool_profile, resolve_codex_chat_reasoning_config,
     should_convert_codex_responses_to_anthropic, should_convert_codex_responses_to_chat,
-    strip_codex_hosted_web_search,
+    strip_codex_hosted_web_search, strip_codex_private_include_markers,
 };
 pub use gemini::GeminiAdapter;
 
@@ -223,7 +223,8 @@ impl ProviderType {
             | AppType::Kimi
             | AppType::Dsh
             | AppType::Omp
-            | AppType::Agy => return None,
+            | AppType::Agy
+            | AppType::Copilot => return None,
         };
         Some(provider_type)
     }
@@ -284,7 +285,8 @@ pub fn get_adapter(app_type: &AppType) -> Option<Box<dyn ProviderAdapter>> {
         | AppType::Kimi
         | AppType::Dsh
         | AppType::Omp
-        | AppType::Agy => return None,
+        | AppType::Agy
+        | AppType::Copilot => return None,
     })
 }
 
