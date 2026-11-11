@@ -636,15 +636,13 @@ pub struct GitleaksDetector;
 
 impl Detector for GitleaksDetector {
     fn detect(&self, text: &str, config: &RedactConfig) -> Vec<Hit> {
-        if !config.secrets || !kind_enabled(config, Kind::Secret) || text.trim().is_empty() {
+        // SECRET 只受 `secrets` 开关控制；`kinds` 只限定个人信息类型，
+        // 否则用户关掉任一个人信息类型时，密钥检测会被静默关闭。
+        if !config.secrets || text.trim().is_empty() {
             return Vec::new();
         }
         RULES.detect(text)
     }
-}
-
-fn kind_enabled(config: &RedactConfig, kind: Kind) -> bool {
-    config.kinds.is_empty() || config.kinds.contains(&kind)
 }
 
 #[cfg(test)]
@@ -755,8 +753,8 @@ mod tests {
     }
 
     #[test]
-    fn respects_secrets_and_kinds_switches() {
-        let text = "aws_key = AKIAIOSFODNN7EXAMPLE";
+    fn respects_secrets_switch_only() {
+        let text = "aws_key = AKIAZXCVBNMASDFGHJKL";
         let muted = RedactConfig {
             enabled: true,
             secrets: false,
@@ -764,11 +762,12 @@ mod tests {
         };
         assert!(GitleaksDetector.detect(text, &muted).is_empty());
 
+        // kinds 只限定个人信息类型，不影响 SECRET。
         let limited = RedactConfig {
             enabled: true,
             kinds: vec![Kind::Email],
             ..Default::default()
         };
-        assert!(GitleaksDetector.detect(text, &limited).is_empty());
+        assert!(!GitleaksDetector.detect(text, &limited).is_empty());
     }
 }

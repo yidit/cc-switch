@@ -41,11 +41,10 @@ Phase 1–3 完成了规则引擎、代理接入和设置页。Phase 4 处理正
 
 ## 4. 流式响应被切开的情况
 
-`restore_stream_chunk` 的缓冲规则补上了「chunk 恰好切在单个 `{` 之后」的情况：
-`{{EMAIL_…}}` 在任何字节位置被拆开都能正确还原（测试覆盖每个切分位置）。
-chunk 切在多字节字符中间时，只处理合法前缀、把不完整字符留在缓冲区，该 chunk 里
-完整的占位符仍会还原。`flush_stream_restore` 遇到不是合法 UTF-8 的剩余内容时原样返回，
-不再用 `from_utf8_lossy` 改写字节。
+`restore_stream_chunk` 按行处理 SSE：完整的行立即还原并输出，不完整的行留在缓冲区，
+chunk 切在任何位置（包括多字节字符中间）都不会丢内容。`data:` 行如果能解析成 JSON，
+就在字符串值上还原后重新序列化，原值里的换行、引号、反斜杠不会破坏 JSON 转义；
+解析失败的行退回纯文本还原。非 UTF-8 行原样透传。
 
 ## 5. 性能
 
@@ -62,8 +61,8 @@ chunk 切在多字节字符中间时，只处理合法前缀、把不完整字�
 
 ## 7. 验证
 
-- `cargo test`：66 个单元测试（含盐值一致性、fail-closed、任意切分位置还原、
-  非 UTF-8 剩余内容）、6 个语料结构校验、85 例评估语料全部通过。
+- `cargo test`：94 个单元测试（含盐值一致性、fail-closed、任意切分位置还原、
+  行级 JSON 还原与非法 UTF-8 透传）、6 个语料结构校验、85 例评估语料全部通过。
 - `cargo clippy --all-targets -- -D warnings` 与 `cargo fmt --check` 无告警。
 - 前端 `tsc --noEmit` 通过；`src/lib/redactConfig.test.ts` 覆盖类型开关和规则增删。
 

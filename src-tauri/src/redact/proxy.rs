@@ -123,91 +123,89 @@ pub fn restore_response_body(bytes: &[u8], table: &PlaceholderTable) -> Option<V
 
 /// 流式响应里单个 chunk 的还原。
 ///
-/// 占位符可能被拆到两个 chunk，因此把末尾可能不完整的 `{{…` 留在
-/// `pending` 中，等下一个 chunk 到达再一起还原。
+/// 按行处理 SSE：完整的行立即还原并输出，不完整的行留在 `pending` 等下一个
+/// chunk。`data:` 行如果能解析成 JSON，就在字符串值上还原后重新序列化，避免
+/// 带换行、引号或反斜杠的原值破坏 JSON 转义；解析失败时退回按文本还原。
 pub fn restore_stream_chunk(
     table: &PlaceholderTable,
     pending: &mut Vec<u8>,
     chunk: &[u8],
 ) -> Vec<u8> {
-    // 先把 pending 整体取出，避免后面写回时与原缓冲区的借用冲突。
     let mut buffer = std::mem::take(pending);
     buffer.extend_from_slice(chunk);
 
-    let mut restored = Vec::with_capacity(buffer.len());
-    let mut rest: &[u8] = &buffer;
-    loop {
-        match std::str::from_utf8(rest) {
-            Ok(text) => {
-                let keep_from = incomplete_placeholder_start(text);
-                restored.extend_from_slice(table.restore(&text[..keep_from]).as_bytes());
-                pending.extend_from_slice(&rest[keep_from..]);
-                return restored;
-            }
-            Err(error) => {
-                let valid_len = error.valid_up_to();
-                let tail = &rest[valid_len..];
-                match error.error_len() {
-                    // 多字节字符被 chunk 截断：只处理合法前缀，尾部留到下一次。
-                    None => {
-                        let text = std::str::from_utf8(&rest[..valid_len])
-                            .expect("valid_up_to 之前必然是合法 UTF-8");
-                        let keep_from = incomplete_placeholder_start(text);
-                        restored.extend_from_slice(table.restore(&text[..keep_from]).as_bytes());
-                        pending.extend_from_slice(&rest[keep_from..]);
-                        return restored;
-                    }
-                    // 真正的非法字节：它不可能是占位符的一部分，原样输出后继续处理
-                    // 后面的字节；否则非法字节会一直留在 pending 开头，后续内容全部被积压。
-                    Some(len) => {
-                        let text = std::str::from_utf8(&rest[..valid_len])
-                            .expect("valid_up_to 之前必然是合法 UTF-8");
-                        restored.extend_from_slice(table.restore(text).as_bytes());
-                        restored.extend_from_slice(&tail[..len]);
-                        rest = &tail[len..];
-                    }
-                }
-            }
+    let mut out = Vec::with_capacity(buffer.len());
+    let mut start = 0usize;
+    for (index, byte) in buffer.iter().enumerate() {
+        if *byte == b'\n' {
+            restore_line(table, &buffer[start..=index], &mut out);
+            start = index + 1;
         }
     }
+    pending.extend_from_slice(&buffer[start..]);
+    out
 }
 
 /// 流结束时把 `pending` 里剩余的内容还原并返回。
-///
-/// 剩余内容不是合法 UTF-8 时原样返回，避免 `from_utf8_lossy` 改写字节。
 pub fn flush_stream_restore(table: &PlaceholderTable, pending: &mut Vec<u8>) -> Option<Vec<u8>> {
     if pending.is_empty() {
         return None;
     }
     let bytes = std::mem::take(pending);
-    match std::str::from_utf8(&bytes) {
-        Ok(text) => Some(table.restore(text).into_bytes()),
-        Err(_) => Some(bytes),
+    let mut out = Vec::with_capacity(bytes.len());
+    restore_line(table, &bytes, &mut out);
+    Some(out)
+}
+
+/// 还原一整行（包含行尾换行符，如果有）。
+fn restore_line(table: &PlaceholderTable, line: &[u8], out: &mut Vec<u8>) {
+    let Ok(text) = std::str::from_utf8(line) else {
+        // 非 UTF-8 字节不可能是占位符的一部分，原样透传。
+        out.extend_from_slice(line);
+        return;
+    };
+
+    let (body, ending) = split_line_ending(text);
+    if let Some((prefix, payload)) = sse_data_payload(body) {
+        if let Some(restored) = restore_json_payload(table, payload) {
+            out.extend_from_slice(prefix.as_bytes());
+            out.extend_from_slice(restored.as_bytes());
+            out.extend_from_slice(ending.as_bytes());
+            return;
+        }
+    }
+
+    out.extend_from_slice(table.restore(body).as_bytes());
+    out.extend_from_slice(ending.as_bytes());
+}
+
+/// 拆出行内容与行尾换行符。
+fn split_line_ending(text: &str) -> (&str, &str) {
+    if let Some(body) = text.strip_suffix("\r\n") {
+        (body, "\r\n")
+    } else if let Some(body) = text.strip_suffix('\n') {
+        (body, "\n")
+    } else {
+        (text, "")
     }
 }
 
-/// 占位符最长约 24 字节；留出余量，超过这个长度的 `{{…` 不当作不完整占位符。
-const MAX_PLACEHOLDER_BYTES: usize = 64;
+/// 取出 `data:` 行的前缀与 payload（不含行尾换行）。
+fn sse_data_payload(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix("data:")?;
+    let payload = rest.strip_prefix(' ').unwrap_or(rest);
+    Some((&line[..5], payload))
+}
 
-/// 返回应当保留到下一个 chunk 的起点。
-fn incomplete_placeholder_start(text: &str) -> usize {
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-
-    // 末尾单个 `{` 可能只是 `{{` 的前半个：chunk 恰好切在这里时也要缓存。
-    if len > 0 && bytes[len - 1] == b'{' && (len < 2 || bytes[len - 2] != b'{') {
-        return len - 1;
+/// 把 `data:` 的 JSON 解析出来还原，返回重新序列化后的 payload；
+/// 不是 JSON 或没有变化时返回 `None`，由调用方按纯文本处理。
+fn restore_json_payload(table: &PlaceholderTable, payload: &str) -> Option<String> {
+    let mut value: Value = serde_json::from_str(payload).ok()?;
+    let changed = restore_json(&mut value, table);
+    if changed == 0 {
+        return None;
     }
-
-    let Some(start) = text.rfind("{{") else {
-        return len;
-    };
-    let tail = &text[start..];
-    if !tail.contains("}}") && tail.len() <= MAX_PLACEHOLDER_BYTES {
-        start
-    } else {
-        len
-    }
+    serde_json::to_string(&value).ok()
 }
 
 #[cfg(test)]
@@ -323,18 +321,25 @@ mod tests {
         assert_eq!(String::from_utf8(restored).unwrap(), "call 415-555-0132");
     }
 
+    fn parse_sse_line(line: &str) -> Value {
+        let payload = line.trim_start_matches("data:").trim();
+        serde_json::from_str(payload).expect("SSE data 应是合法 JSON")
+    }
+
     #[test]
     fn restores_a_placeholder_split_across_chunks() {
         let mut table = PlaceholderTable::with_seed(7);
         let placeholder = table.placeholder_for("jane.smith@gmail.com", crate::redact::Kind::Email);
-        let (first, second) = placeholder.split_at(placeholder.len() / 2);
+        let line = format!("data: {{\"text\":\"{placeholder}\"}}\n");
+        let (first, second) = line.split_at(line.len() / 2);
 
         let mut pending = Vec::new();
         let out1 = restore_stream_chunk(&table, &mut pending, first.as_bytes());
         let out2 = restore_stream_chunk(&table, &mut pending, second.as_bytes());
 
-        assert!(out1.is_empty(), "不完整的占位符应留在 pending");
-        assert_eq!(String::from_utf8(out2).unwrap(), "jane.smith@gmail.com");
+        assert!(out1.is_empty(), "不完整的行应留在 pending");
+        let value = parse_sse_line(&String::from_utf8(out2).unwrap());
+        assert_eq!(value["text"], "jane.smith@gmail.com");
         assert!(pending.is_empty());
     }
 
@@ -352,24 +357,28 @@ mod tests {
     fn restores_a_placeholder_split_at_every_boundary() {
         let mut table = PlaceholderTable::with_seed(7);
         let placeholder = table.placeholder_for("jane.smith@gmail.com", crate::redact::Kind::Email);
+        let line = format!("data: {{\"text\":\"{placeholder}\"}}\n");
 
-        for split in 0..=placeholder.len() {
+        for split in 0..=line.len() {
             let mut pending = Vec::new();
             let mut out = Vec::new();
             out.extend(restore_stream_chunk(
                 &table,
                 &mut pending,
-                &placeholder.as_bytes()[..split],
+                &line.as_bytes()[..split],
             ));
             out.extend(restore_stream_chunk(
                 &table,
                 &mut pending,
-                &placeholder.as_bytes()[split..],
+                &line.as_bytes()[split..],
             ));
+            if let Some(tail) = flush_stream_restore(&table, &mut pending) {
+                out.extend(tail);
+            }
 
+            let value = parse_sse_line(&String::from_utf8(out).unwrap());
             assert_eq!(
-                String::from_utf8(out).unwrap(),
-                "jane.smith@gmail.com",
+                value["text"], "jane.smith@gmail.com",
                 "在字节 {split} 处切开时未还原"
             );
             assert!(pending.is_empty(), "在字节 {split} 处切开后仍剩余内容");
@@ -380,19 +389,22 @@ mod tests {
     fn restores_placeholders_when_a_chunk_cuts_a_multibyte_character() {
         let mut table = PlaceholderTable::with_seed(7);
         let placeholder = table.placeholder_for("jane.smith@gmail.com", crate::redact::Kind::Email);
-        let text = format!("{placeholder}中");
-        let bytes = text.as_bytes();
+        let line = format!("data: {{\"text\":\"{placeholder}中\"}}\n");
+        let bytes = line.as_bytes();
         // “中”占 3 字节，在它内部切开：前一个 chunk 的尾部不是合法 UTF-8。
-        let split = placeholder.len() + 1;
+        let split = line.find('中').expect("测试行包含中文") + 1;
 
         let mut pending = Vec::new();
         let mut out = Vec::new();
         out.extend(restore_stream_chunk(&table, &mut pending, &bytes[..split]));
         out.extend(restore_stream_chunk(&table, &mut pending, &bytes[split..]));
+        if let Some(tail) = flush_stream_restore(&table, &mut pending) {
+            out.extend(tail);
+        }
 
+        let value = parse_sse_line(&String::from_utf8(out).unwrap());
         assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "jane.smith@gmail.com中",
+            value["text"], "jane.smith@gmail.com中",
             "切在多字节字符中间时也要还原完整的占位符"
         );
         assert!(pending.is_empty());
@@ -401,21 +413,61 @@ mod tests {
     #[test]
     fn passes_invalid_utf8_bytes_through_without_stalling() {
         let mut table = PlaceholderTable::with_seed(7);
-        let placeholder = table.placeholder_for("{{EMAIL_hw4nuhim}}", crate::redact::Kind::Email);
+        let placeholder = table.placeholder_for("jane.smith@gmail.com", crate::redact::Kind::Email);
 
         let mut pending = Vec::new();
-        let mut out = restore_stream_chunk(&table, &mut pending, &[b'x', 0xff]);
-        assert_eq!(out, vec![b'x', 0xff], "非法字节应原样输出");
+        let mut out = restore_stream_chunk(&table, &mut pending, &[b'x', 0xff, b'\n']);
+        assert_eq!(out, vec![b'x', 0xff, b'\n'], "非法字节应原样输出");
         assert!(pending.is_empty(), "非法字节不能留在缓冲区");
 
-        out.extend(restore_stream_chunk(
+        let line = format!("data: {{\"text\":\"{placeholder}\"}}\n");
+        out.extend(restore_stream_chunk(&table, &mut pending, line.as_bytes()));
+        let value = parse_sse_line(std::str::from_utf8(&out[3..]).unwrap());
+        assert_eq!(value["text"], "jane.smith@gmail.com");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn restores_json_unsafe_values_in_sse_data() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let secret = "line1\nline2 \"quoted\" C:\\temp";
+        let placeholder = table.placeholder_for(secret, crate::redact::Kind::Secret);
+        let line = format!("data: {{\"delta\":{{\"text\":\"{placeholder}\"}}}}\n");
+
+        let mut pending = Vec::new();
+        let out = restore_stream_chunk(&table, &mut pending, line.as_bytes());
+
+        let value = parse_sse_line(&String::from_utf8(out).unwrap());
+        assert_eq!(value["delta"]["text"], secret);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn restores_plain_text_sse_lines_without_reserializing() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let placeholder = table.placeholder_for("415-555-0132", crate::redact::Kind::Phone);
+        let line = format!("data: call {placeholder}\n");
+
+        let mut pending = Vec::new();
+        let out = restore_stream_chunk(&table, &mut pending, line.as_bytes());
+
+        assert_eq!(String::from_utf8(out).unwrap(), "data: call 415-555-0132\n");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn passes_other_sse_lines_through() {
+        let table = PlaceholderTable::with_seed(7);
+        let mut pending = Vec::new();
+        let out = restore_stream_chunk(
             &table,
             &mut pending,
-            placeholder.as_bytes(),
-        ));
+            b"event: message\nid: 42\n: keep-alive\n",
+        );
+
         assert_eq!(
-            String::from_utf8(out[2..].to_vec()).unwrap(),
-            "{{EMAIL_hw4nuhim}}"
+            String::from_utf8(out).unwrap(),
+            "event: message\nid: 42\n: keep-alive\n"
         );
         assert!(pending.is_empty());
     }

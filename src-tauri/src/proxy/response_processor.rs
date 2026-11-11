@@ -183,6 +183,10 @@ pub async fn handle_streaming(
 
     let mut response_headers = response.headers().clone();
     strip_hop_by_hop_response_headers(&mut response_headers);
+    // 脱敏还原会改变字节数，不能沿用上游的 Content-Length。
+    if ctx.redaction.is_some() {
+        response_headers.remove(axum::http::header::CONTENT_LENGTH);
+    }
 
     let mut builder = axum::response::Response::builder().status(status);
 
@@ -874,7 +878,7 @@ pub fn create_logged_passthrough_stream_with_redaction(
                                 &bytes,
                             );
                             if restored.is_empty() {
-                                // 整个 chunk 都是不完整占位符，等下一个 chunk。
+                                // 整个 chunk 都是不完整的行，等下一个 chunk。
                                 None
                             } else {
                                 Some(Bytes::from(restored))

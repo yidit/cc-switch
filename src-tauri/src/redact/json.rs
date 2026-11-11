@@ -32,6 +32,11 @@ const SKIP_KEYS: &[&str] = &[
     "tool_use_id",
     "tool_call_id",
     "call_id",
+    // 不透明签名与加密内容：改一个字节上游就会拒绝，且高熵值会误触密钥规则。
+    "signature",
+    "thoughtsignature",
+    "thought_signature",
+    "encrypted_content",
 ];
 
 /// 一次 JSON 脱敏的统计。
@@ -111,7 +116,20 @@ fn collect_strings(value: &Value, key: Option<&str>, out: &mut Vec<String>) {
             }
         }
         Value::Object(map) => {
+            // 思考内容与签名绑定：改写正文或加密数据都会让上游校验失败。
+            let block_type = map.get("type").and_then(Value::as_str);
+            let is_thinking = block_type == Some("thinking");
+            let is_redacted_thinking = block_type == Some("redacted_thinking");
+            let is_thought_part = map.get("thought").and_then(Value::as_bool) == Some(true)
+                || map.contains_key("thoughtSignature")
+                || map.contains_key("thought_signature");
             for (child_key, child) in map {
+                if (is_redacted_thinking && child_key == "data")
+                    || (is_thinking && child_key == "thinking")
+                    || (is_thought_part && child_key == "text")
+                {
+                    continue;
+                }
                 collect_strings(child, Some(child_key), out);
             }
         }
@@ -154,7 +172,19 @@ fn walk_mask(
             }
         }
         Value::Object(map) => {
+            let block_type = map.get("type").and_then(Value::as_str);
+            let is_thinking = block_type == Some("thinking");
+            let is_redacted_thinking = block_type == Some("redacted_thinking");
+            let is_thought_part = map.get("thought").and_then(Value::as_bool) == Some(true)
+                || map.contains_key("thoughtSignature")
+                || map.contains_key("thought_signature");
             for (child_key, child) in map.iter_mut() {
+                if (is_redacted_thinking && child_key == "data")
+                    || (is_thinking && child_key == "thinking")
+                    || (is_thought_part && child_key == "text")
+                {
+                    continue;
+                }
                 walk_mask(
                     child,
                     Some(child_key),
@@ -369,6 +399,39 @@ mod tests {
 
         assert_eq!(stats.strings, 0);
         assert!(value["type"].as_str().unwrap().starts_with("sk-proj-"));
+    }
+
+    #[test]
+    fn skips_opaque_signature_and_encrypted_fields() {
+        let (engine, config) = engine_and_config();
+        let mut table = PlaceholderTable::with_seed(7);
+        let opaque = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=";
+        let mut value = json!({
+            "content": [
+                {"type": "thinking", "thinking": "mail jane.smith@gmail.com", "signature": opaque},
+                {"type": "redacted_thinking", "data": opaque},
+                {"type": "text", "text": "mail jane.smith@gmail.com"},
+                {"text": "mail jane.smith@gmail.com", "thought": true}
+            ],
+            "encrypted_content": opaque
+        });
+
+        let stats =
+            mask_json(&mut value, &engine, &config, &mut table, None).expect("脱敏不应失败");
+
+        assert_eq!(value["content"][0]["thinking"], "mail jane.smith@gmail.com");
+        assert_eq!(value["content"][0]["signature"], opaque);
+        assert_eq!(value["content"][1]["data"], opaque);
+        assert_eq!(
+            value["content"][3]["text"], "mail jane.smith@gmail.com",
+            "Gemini 的 thought part 不能改写"
+        );
+        assert_eq!(value["encrypted_content"], opaque);
+        assert!(value["content"][2]["text"]
+            .as_str()
+            .unwrap()
+            .contains("{{EMAIL_"));
+        assert_eq!(stats.strings, 1, "只有普通 text 块参与脱敏");
     }
 
     #[test]

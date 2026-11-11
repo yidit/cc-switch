@@ -137,6 +137,8 @@ async fn restore_transformed_response(
         ));
     }
 
+    // 还原会改变字节数，流式响应不能沿用上游的 Content-Length。
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
     let mut data = body.into_data_stream();
     let stream = async_stream::stream! {
         let mut pending: Vec<u8> = Vec::new();

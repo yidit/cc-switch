@@ -101,15 +101,18 @@ pub fn cached_engine() -> Option<Arc<ModelEngine>> {
 /// 加载模型；失败时返回可展示给用户的错误。
 pub fn load_engine() -> Result<Arc<ModelEngine>, String> {
     let slot = ENGINE.get_or_init(|| Mutex::new(None));
-    if let Some(engine) = slot.lock().ok().and_then(|slot| slot.clone()) {
+    // 加载期间持有锁：并发首批请求不能各自加载一份 40MB 的 session，
+    // 也不能并发写 ORT_DYLIB_PATH。
+    let mut slot = slot
+        .lock()
+        .map_err(|_| "模型状态锁已损坏，请重启应用".to_string())?;
+    if let Some(engine) = slot.as_ref().cloned() {
         return Ok(engine);
     }
 
     let dir = model_dir();
     let engine = Arc::new(ModelEngine::load(&dir)?);
-    if let Ok(mut slot) = slot.lock() {
-        *slot = Some(engine.clone());
-    }
+    *slot = Some(engine.clone());
     Ok(engine)
 }
 
