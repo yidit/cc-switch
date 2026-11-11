@@ -19,6 +19,7 @@ import {
   Route,
   Server,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
 import type { AppId } from "@/lib/api";
@@ -693,6 +694,7 @@ const SETTINGS_ITEMS: { section: SettingsSection; icon: IconComponent }[] = [
   { section: "appConfig", icon: Folder },
   { section: "routing", icon: Route },
   { section: "network", icon: Globe },
+  { section: "privacy", icon: ShieldCheck },
   { section: "data", icon: Database },
   { section: "about", icon: Info },
 ];
