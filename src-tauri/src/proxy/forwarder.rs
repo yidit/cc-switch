@@ -2011,17 +2011,12 @@ impl RequestForwarder {
             {
                 mapped_body["max_output_tokens"] = Value::from(max_out);
             }
-            // Anthropic requires max_tokens; fall back to this default only when the
-            // Codex request omits max_output_tokens (rare — Codex normally sends it).
-            // Kept conservative so a low-output-ceiling model or relay does not hard-400
-            // on the fallback (a too-high default 400s and is non-retryable); 8192 is
-            // accepted by every current Claude model and virtually all gateways. The
-            // transform clamps any thinking budget below this value.
-            const DEFAULT_CODEX_ANTHROPIC_MAX_TOKENS: u64 = 8192;
+            // Anthropic requires max_tokens, and Codex never sends max_output_tokens,
+            // so this default applies to every request without a provider override.
             let mut anthropic_body =
                 super::providers::transform_codex_anthropic::responses_request_to_anthropic(
                     mapped_body,
-                    DEFAULT_CODEX_ANTHROPIC_MAX_TOKENS,
+                    super::providers::transform_codex_anthropic::DEFAULT_CODEX_ANTHROPIC_MAX_TOKENS,
                 )?;
             // Handle the 1M-context marker [1m]: strip the model-name suffix (the
             // gateway doesn't recognize it) and set the flag so the beta header is
@@ -2141,6 +2136,21 @@ impl RequestForwarder {
                 &mut request_body,
                 self.keeps_resolved_model(),
             )?;
+        }
+
+        // Codex 客户端私有的 `include` 标记只对官方 ChatGPT 后端有效：第三方与本地原生
+        // Responses 网关收到它会整条 400（#9042）。
+        if should_drop_codex_private_include_markers(
+            app_type,
+            provider,
+            codex_responses_to_chat,
+            codex_responses_to_anthropic,
+        ) && super::providers::strip_codex_private_include_markers(&mut request_body)
+        {
+            log::debug!(
+                "[Codex] Dropped Codex-private include markers for a third-party upstream (provider={})",
+                provider.id
+            );
         }
 
         // Stack 请求发往拒收托管 `web_search` 的原生 Responses 上游：去掉这个工具，和 Chat、
@@ -3508,13 +3518,21 @@ impl RequestForwarder {
     }
 }
 
-/// Shared strict-Grok request pipeline, called only after native Responses
-/// transport selection. Keep the model-aware gate alongside its transforms.
+/// Shared request pipeline after native Responses transport selection.
+/// Normalize standalone receipts for third parties before the strict-Grok gate.
 fn apply_native_responses_request_compat(
     provider: &Provider,
     body: &mut Value,
     keep_resolved_model: bool,
 ) -> Result<(), ProxyError> {
+    if !super::providers::is_codex_official_provider(provider)
+        && super::providers::transform_codex_responses_xai_sanitize::rewrite_xai_call_id_less_tool_outputs(body)
+    {
+        log::info!(
+            "[Codex] Rewrote function_call_output items without call_id for native Responses upstream (provider={})",
+            provider.id
+        );
+    }
     if !super::providers::provider_needs_responses_namespace_flatten(
         provider,
         body.get("model").and_then(Value::as_str),
@@ -3843,6 +3861,21 @@ fn is_chatgpt_identity_header(key_str: &str) -> bool {
     ) || key_str.starts_with("x-oai-")
         || key_str.starts_with("x-openai-")
         || key_str.starts_with("x-responsesapi-")
+}
+
+/// Codex 客户端私有的 `include` 标记（`output.encrypted_content`）只对官方 ChatGPT 后端
+/// 有效。第三方与本地原生 Responses 网关收到它会把整条请求 400 掉（#9042）。转 Chat /
+/// Anthropic 的路径本来就不带它，官方那条路逐字节不变。
+fn should_drop_codex_private_include_markers(
+    app_type: &AppType,
+    provider: &Provider,
+    codex_responses_to_chat: bool,
+    codex_responses_to_anthropic: bool,
+) -> bool {
+    matches!(app_type, AppType::Codex)
+        && !codex_responses_to_chat
+        && !codex_responses_to_anthropic
+        && !super::providers::is_codex_official_provider(provider)
 }
 
 fn codex_anthropic_error_envelope_message(body: &[u8]) -> Option<String> {
@@ -6750,6 +6783,75 @@ mod tests {
     }
 
     #[test]
+    fn native_responses_rewrites_call_id_less_outputs_for_non_xai_providers() {
+        let provider = test_provider_with_type(None);
+        for call_id in [None, Some(json!(null)), Some(json!("")), Some(json!("  "))] {
+            let mut receipt = json!({
+                "type": "function_call_output", "id": "fco_receipt",
+                "name": "send_message_to_thread", "namespace": "codex_app",
+                "output": "<codex_delegation>Review the diff.</codex_delegation>"
+            });
+            if let Some(call_id) = call_id {
+                receipt["call_id"] = call_id;
+            }
+            let mut body = json!({
+                "model": "gpt-example", "previous_response_id": "resp_previous",
+                "input": [receipt, {
+                    "type": "function_call_output", "call_id": "call_previous", "output": "kept"
+                }]
+            });
+            let previous_output = body["input"][1].clone();
+            apply_native_responses_request_compat(&provider, &mut body, false).unwrap();
+            assert_eq!(body["input"][0]["type"], "message");
+            assert_eq!(
+                body["input"][0]["content"][0]["text"],
+                "[tool_result without a matching tool_call]\n<codex_delegation>Review the diff.</codex_delegation>"
+            );
+            assert_eq!(body["input"][1], previous_output);
+            assert_eq!(body["model"], "gpt-example");
+            assert_eq!(body["previous_response_id"], "resp_previous");
+            let once = body.clone();
+            apply_native_responses_request_compat(&provider, &mut body, false).unwrap();
+            assert_eq!(body, once);
+        }
+    }
+
+    #[test]
+    fn native_responses_keeps_official_call_id_less_outputs() {
+        let mut provider = test_provider_with_type(None);
+        provider.category = Some("official".to_string());
+        provider.settings_config = json!({"auth": {}, "config": ""});
+        assert!(super::super::providers::is_codex_official_provider(
+            &provider
+        ));
+        let original = json!({
+            "model": "gpt-example",
+            "input": [{"type": "function_call_output", "name": "automation_update", "output": "receipt"}]
+        });
+        let mut body = original.clone();
+        apply_native_responses_request_compat(&provider, &mut body, false).unwrap();
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn native_responses_keeps_hosted_search_and_async_history() {
+        let provider = test_provider_with_type(None);
+        let original = json!({"input": [
+            {"type": "tool_search_output", "execution": "server", "call_id": null,
+             "status": "completed", "tools": [{"type": "function", "name": "lookup"}]},
+            {"type": "function_call", "call_id": "slow", "name": "shell", "arguments": "{}", "async": true},
+            {"type": "message", "role": "assistant", "content": "Still working."},
+            {"type": "message", "role": "user", "content": "Query the flight as well."},
+            {"type": "function_call", "call_id": "fast", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "fast", "output": "flight"},
+            {"type": "function_call_output", "call_id": "slow", "output": "done"}
+        ]});
+        let mut body = original.clone();
+        apply_native_responses_request_compat(&provider, &mut body, false).unwrap();
+        assert_eq!(body, original);
+    }
+
+    #[test]
     fn copilot_grok_native_request_reuses_xai_compat_without_model_fallback() {
         let mut copilot = test_provider_with_type(Some("github_copilot"));
         copilot.settings_config = json!({
@@ -7612,6 +7714,42 @@ mod tests {
             }
         }
 
+        #[tokio::test]
+        async fn native_responses_forwarder_preserves_call_less_receipt_content() {
+            let upstream = upstream().await;
+            let mut request = body("listed", json!([]));
+            request["input"] = json!([
+                {"type": "function_call_output", "id": "fco_page", "namespace": "agent",
+                 "name": "codex_apps_open_page", "output": "{\"page_id\":null}"},
+                {"type": "function_call_output", "call_id": " ", "output": [
+                    {"type": "input_text", "text": "page selection"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+                ]},
+                {"role": "user", "content": "Continue."}
+            ]);
+            for stack in [false, true] {
+                let seen = send(
+                    &forwarder(stack),
+                    &upstream,
+                    provider(&upstream, "openai_responses"),
+                    "/responses",
+                    request.clone(),
+                )
+                .await;
+                let input = seen.body["input"].as_array().unwrap();
+                assert_eq!(input.len(), 3);
+                assert_eq!(input[0]["type"], "message");
+                assert_eq!(
+                    input[0]["content"][0]["text"],
+                    "[tool_result without a matching tool_call]\n{\"page_id\":null}"
+                );
+                assert_eq!(input[1]["type"], "message");
+                assert_eq!(input[1]["content"][1], request["input"][1]["output"][0]);
+                assert_eq!(input[1]["content"][2], request["input"][1]["output"][1]);
+                assert_eq!(input[2], request["input"][2]);
+            }
+        }
+
         /// Native Responses third parties cannot consume Codex's private compaction
         /// trigger. Rewrite it into a summary turn that prevents new tool calls
         /// while preserving tool definitions and historical tool-call references.
@@ -7812,6 +7950,104 @@ mod tests {
                 assert_eq!(seen.body["tools"], tools, "stack={stack} {model}");
                 assert_eq!(seen.body["tool_choice"]["type"], "web_search");
             }
+        }
+
+        /// Codex 0.163+ 给每个请求带 `include: ["reasoning.encrypted_content",
+        /// "output.encrypted_content"]`。后一个是 ChatGPT 后端私有能力，严格的第三方与本地
+        /// 原生 Responses 网关会拿它整条 400（#9042）。
+        #[tokio::test]
+        async fn third_party_requests_drop_codex_private_include_markers() {
+            let upstream = upstream().await;
+            let with_include = |include: Value| {
+                let mut body = body("listed", json!([]));
+                body["include"] = include;
+                body
+            };
+
+            // 只掉私有那个，其余标记原样留着。
+            let seen = send(
+                &forwarder(true),
+                &upstream,
+                provider(&upstream, "openai_responses"),
+                "/responses",
+                with_include(json!([
+                    "reasoning.encrypted_content",
+                    "output.encrypted_content"
+                ])),
+            )
+            .await;
+            assert_eq!(seen.body["include"], json!(["reasoning.encrypted_content"]));
+
+            // 只剩私有标记时整个键去掉，别留一个空数组。
+            let seen = send(
+                &forwarder(true),
+                &upstream,
+                provider(&upstream, "openai_responses"),
+                "/responses",
+                with_include(json!(["output.encrypted_content"])),
+            )
+            .await;
+            assert!(seen.body.get("include").is_none(), "{}", seen.body);
+
+            // 路由请求直连本地网关时一样会中招，同样要掉。
+            let seen = send(
+                &forwarder(false),
+                &upstream,
+                provider(&upstream, "openai_responses"),
+                "/responses",
+                with_include(json!(["output.encrypted_content"])),
+            )
+            .await;
+            assert!(seen.body.get("include").is_none(), "{}", seen.body);
+        }
+
+        /// 官方 ChatGPT 后端认这个标记；转 Chat / Anthropic 的路径本来就不带它。三条都跳过。
+        /// 官方那条路实测只能打到 chatgpt.com，这里直接验门控。
+        #[test]
+        fn private_include_marker_gate_skips_official_and_converted_requests() {
+            let third_party = provider(
+                &Upstream {
+                    base_url: "https://relay.example.com".to_string(),
+                    seen: Arc::new(Mutex::new(Vec::new())),
+                },
+                "openai_responses",
+            );
+            let mut official = third_party.clone();
+            official.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+            official.category = Some("official".to_string());
+
+            assert!(should_drop_codex_private_include_markers(
+                &AppType::Codex,
+                &third_party,
+                false,
+                false
+            ));
+            assert!(!should_drop_codex_private_include_markers(
+                &AppType::Codex,
+                &official,
+                false,
+                false
+            ));
+            // 转 Chat / 转 Anthropic 的路径不带原生 Responses 字段。
+            assert!(!should_drop_codex_private_include_markers(
+                &AppType::Codex,
+                &third_party,
+                true,
+                false
+            ));
+            assert!(!should_drop_codex_private_include_markers(
+                &AppType::Codex,
+                &third_party,
+                false,
+                true
+            ));
+            // Grok Build 走 xAI 自己的清洗，不归这里管。
+            assert!(!should_drop_codex_private_include_markers(
+                &AppType::GrokBuild,
+                &third_party,
+                false,
+                false
+            ));
         }
 
         /// 按脚本依次回应的假上游，记下请求头和请求体。
