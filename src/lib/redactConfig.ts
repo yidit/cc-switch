@@ -14,6 +14,7 @@ export const PERSONAL_KINDS = [
   "ACCOUNT",
   "PERSON",
   "ADDRESS",
+  "IP",
 ] as const;
 
 export type PersonalKind = (typeof PERSONAL_KINDS)[number];
@@ -24,6 +25,7 @@ export const REDACT_KINDS: RedactKind[] = [
   "PHONE",
   "EMAIL",
   "ACCOUNT",
+  "IP",
   "ADDRESS",
 ];
 

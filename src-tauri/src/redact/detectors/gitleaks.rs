@@ -1,6 +1,9 @@
-//! 密钥 / 凭证检测：gitleaks 规则（关键词预筛）+ 上下文口令 + 高熵兜底
+//! 密钥 / 凭证检测：gitleaks 规则（关键词预筛）+ 上下文口令 + 高熵兜底。
+//!
+//! 规则集与判定逻辑移植自 CC Switch 上游的隐私过滤器
+//! （`proxy/privacy_filter/secrets.rs`，源自 packyme/privacy-filter，MIT）。
 
-use super::{Kind, Span};
+use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
@@ -70,6 +73,22 @@ const ASSIGNMENT_CHARS: &[u8] = b" \t\r\n=:'\"";
 
 /// 业务标识符的常见变量名后缀。`order_id=xxxxx` 这类不应被当密钥。
 const BENIGN_ID_SUFFIXES: &[&str] = &["_id", "_uuid", "_uid", "_oid", "_no", "_seq"];
+
+/// 模型调用、请求等内部标识的前缀。它们熵很高，但不是凭证。
+const BENIGN_ID_PREFIXES: &[&str] = &[
+    "toolu_",
+    "tool_",
+    "call_",
+    "req_",
+    "msg_",
+    "resp_",
+    "run_",
+    "asst_",
+    "thread_",
+    "file_",
+    "file-",
+    "chatcmpl-",
+];
 
 /// 常见占位符词（大小写不敏感的子串匹配）
 const COMMON_PLACEHOLDERS: &[&str] = &[
@@ -200,7 +219,7 @@ impl RuleAllowlist {
             .filter_map(|pattern| match Regex::new(pattern) {
                 Ok(re) => Some(re),
                 Err(e) => {
-                    log::warn!("[PrivacyFilter] Skipped incompatible allowlist regex: {e}");
+                    log::warn!("[redact] Skipped incompatible allowlist regex: {e}");
                     None
                 }
             })
@@ -248,7 +267,7 @@ impl RuleAllowlist {
     }
 }
 
-pub(super) struct SecretDetector {
+pub(super) struct SecretRules {
     rules: Vec<SecretRule>,
     /// 因正则语法不兼容被跳过的规则数
     skipped: usize,
@@ -288,8 +307,8 @@ struct TomlAllowlist {
     paths: Vec<String>,
 }
 
-impl SecretDetector {
-    pub(super) fn from_gitleaks_toml(toml_text: &str) -> Self {
+impl SecretRules {
+    fn from_gitleaks_toml(toml_text: &str) -> Self {
         let mut sd = Self {
             rules: Vec::new(),
             skipped: 0,
@@ -323,7 +342,7 @@ impl SecretDetector {
                     });
                 }
             }
-            Err(e) => log::warn!("[PrivacyFilter] Failed to parse gitleaks rules: {e}"),
+            Err(e) => log::warn!("[redact] Failed to parse gitleaks rules: {e}"),
         }
         if sd.rules.is_empty() {
             sd.load_builtin();
@@ -331,7 +350,7 @@ impl SecretDetector {
         sd
     }
 
-    pub(super) fn stats(&self) -> (usize, usize) {
+    fn stats(&self) -> (usize, usize) {
         (self.rules.len(), self.skipped)
     }
 
@@ -365,14 +384,15 @@ impl SecretDetector {
         }
     }
 
-    pub(super) fn detect(&self, text: &str) -> Vec<Span> {
+    fn detect(&self, text: &str) -> Vec<Hit> {
         let mut spans = Vec::new();
         let low = text.to_lowercase();
-        let push = |spans: &mut Vec<Span>, start, end| {
-            spans.push(Span {
+        let push = |spans: &mut Vec<Hit>, start, end| {
+            spans.push(Hit {
                 start,
                 end,
                 kind: Kind::Secret,
+                action: Action::Placeholder,
             })
         };
 
@@ -416,6 +436,7 @@ impl SecretDetector {
                         || is_business_id_assignment(whole.as_str())
                         || cand.contains(',')))
                     || is_template_var(cand)
+                    || is_benign_id(cand)
                     || is_likely_placeholder(cand)
                 {
                     continue;
@@ -447,6 +468,7 @@ impl SecretDetector {
                 continue;
             }
             if is_template_var(cand)
+                || is_benign_id(cand)
                 || is_hex_hash(cand)
                 || is_uuid(cand)
                 || is_business_id_assignment(whole.as_str())
@@ -483,6 +505,12 @@ fn looks_like_url_match(s: &str) -> bool {
 fn is_likely_placeholder(s: &str) -> bool {
     let upper = s.to_uppercase();
     COMMON_PLACEHOLDERS.iter().any(|p| upper.contains(p))
+}
+
+/// 工具调用 / 请求 ID 这类内部标识，熵高但不是密钥。
+fn is_benign_id(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    BENIGN_ID_PREFIXES.iter().any(|p| lower.starts_with(p))
 }
 
 /// 上下文口令的 value 是否只是占位。先去掉两端标点，让 `string,` / `&str` / `string[]` 也能对上词表。
@@ -588,4 +616,97 @@ fn shannon_entropy(s: &str) -> f64 {
             -p * p.log2()
         })
         .sum()
+}
+
+/// 编译好的 gitleaks 规则；首次使用时加载，之后只读复用。
+static RULES: Lazy<SecretRules> = Lazy::new(|| {
+    let rules = SecretRules::from_gitleaks_toml(include_str!("gitleaks.toml"));
+    let (loaded, skipped) = rules.stats();
+    log::info!("[redact] 已加载 {loaded} 条 gitleaks 密钥规则（跳过 {skipped} 条）");
+    rules
+});
+
+/// 预热：提前编译规则，避免第一个请求承担编译耗时。
+pub fn warm_up() {
+    Lazy::force(&RULES);
+}
+
+/// 基于 gitleaks 规则集的密钥检测器。
+pub struct GitleaksDetector;
+
+impl Detector for GitleaksDetector {
+    fn detect(&self, text: &str, config: &RedactConfig) -> Vec<Hit> {
+        if !config.secrets || !kind_enabled(config, Kind::Secret) || text.trim().is_empty() {
+            return Vec::new();
+        }
+        RULES.detect(text)
+    }
+}
+
+fn kind_enabled(config: &RedactConfig, kind: Kind) -> bool {
+    config.kinds.is_empty() || config.kinds.contains(&kind)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn find(text: &str) -> Vec<&str> {
+        let config = RedactConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        GitleaksDetector
+            .detect(text, &config)
+            .into_iter()
+            .map(|hit| &text[hit.start..hit.end])
+            .collect()
+    }
+
+    #[test]
+    fn detects_common_key_formats() {
+        let aws = ["AKIA", "ZXCVBNMASDFGHJKL"].concat();
+        assert_eq!(find(&format!("aws_key = {aws}")), vec![aws.as_str()]);
+
+        let github = ["ghp", "_", "0123456789abcdefghijklmnopqrstuvwxyz"].concat();
+        let text = format!("token: {github}");
+        let hits = find(&text);
+        assert!(hits.contains(&github.as_str()), "{hits:?}");
+    }
+
+    #[test]
+    fn detects_context_passwords() {
+        assert_eq!(find("我的密码是 hunter2"), vec!["hunter2"]);
+    }
+
+    #[test]
+    fn ignores_paths_hashes_and_placeholders() {
+        assert!(find("open src/components/settings/PrivacySection.tsx").is_empty());
+        let sha = [
+            "9f86d081884c7d659a2feaa0c55ad015",
+            "a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        ]
+        .concat();
+        assert!(find(&format!("sha256:{sha}")).is_empty());
+        assert!(find("id=550e8400-e29b-41d4-a716-446655440000").is_empty());
+        assert!(find("api_key=REPLACE_ME").is_empty());
+    }
+
+    #[test]
+    fn respects_secrets_and_kinds_switches() {
+        let text = "aws_key = AKIAIOSFODNN7EXAMPLE";
+        let muted = RedactConfig {
+            enabled: true,
+            secrets: false,
+            ..Default::default()
+        };
+        assert!(GitleaksDetector.detect(text, &muted).is_empty());
+
+        let limited = RedactConfig {
+            enabled: true,
+            kinds: vec![Kind::Email],
+            ..Default::default()
+        };
+        assert!(GitleaksDetector.detect(text, &limited).is_empty());
+    }
 }

@@ -482,8 +482,6 @@ async fn handle_messages_for_app(
         stack,
     )
     .await?;
-    ctx.apply_privacy_filter(&mut body);
-
     // 请求体在最终发送前脱敏；占位符映射随 ctx 交给响应处理还原。
     apply_request_redaction(&mut body, &mut ctx).await?;
 
@@ -1142,7 +1140,6 @@ pub async fn handle_chat_completions(
     )
     .await?;
     apply_request_redaction(&mut body, &mut ctx).await?;
-    ctx.apply_privacy_filter(&mut body);
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
 
     let is_stream = body
@@ -1266,7 +1263,6 @@ async fn handle_responses_for_app(
     )
     .await?;
     apply_request_redaction(&mut body, &mut ctx).await?;
-    ctx.apply_privacy_filter(&mut body);
     let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body
@@ -1537,7 +1533,6 @@ async fn handle_codex_standalone_passthrough(
     )
     .await?;
     apply_request_redaction(&mut body, &mut ctx).await?;
-    ctx.apply_privacy_filter(&mut body);
     let endpoint = endpoint_with_query(&uri, canonical_endpoint);
 
     let forwarder = ctx.create_forwarder(&state);
@@ -1632,7 +1627,6 @@ async fn handle_responses_compact_for_app(
     )
     .await?;
     apply_request_redaction(&mut body, &mut ctx).await?;
-    ctx.apply_privacy_filter(&mut body);
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
 
     let is_stream = body
@@ -2794,8 +2788,6 @@ pub async fn handle_gemini(
     )
     .await?
     .with_model_from_uri(&uri);
-    ctx.apply_privacy_filter(&mut body);
-
     apply_request_redaction(&mut body, &mut ctx).await?;
 
     // 提取完整的路径和查询参数

@@ -2,6 +2,8 @@
 
 pub mod account;
 pub mod email;
+pub mod gitleaks;
+pub mod ip;
 pub mod phone;
 pub mod rules;
 pub mod secret;
@@ -9,6 +11,8 @@ pub mod words;
 
 pub use account::AccountDetector;
 pub use email::EmailDetector;
+pub use gitleaks::GitleaksDetector;
+pub use ip::IpDetector;
 pub use phone::PhoneDetector;
 pub use rules::CustomRuleDetector;
 pub use secret::SecretDetector;

@@ -25,6 +25,7 @@
 | `EMAIL` | 邮箱地址（含 `Name <addr>` 形式） | ✅ | ✅ |
 | `PHONE` | 手机号、带国际区号的电话号码 | ✅ | ✅ |
 | `ACCOUNT` | 银行卡、IBAN、身份证号 | ✅ | ✅ |
+| `IP` | 公网 IPv4（回环、未指定、广播地址除外） | ❌ | ✅ |
 | `PERSON` | 自定义屏蔽词、词典命中的人名 | ⚠️ 仅词典/自定义词 | ✅ 规则 + 可选模型 |
 | `ADDRESS` | 地址 | ❌ 第一阶段不做 | ✅ 可选模型 |
 
@@ -80,7 +81,8 @@
 字段说明：
 
 - `enabled`：总开关，默认 `false`。
-- `secrets` / `personal`：magpie 的两个大类开关；`kinds` 用于进一步限定 `personal` 的类型。
+- `secrets` / `personal`：magpie 的两个大类开关；`kinds` 用于进一步限定 `personal` 的类型
+  （EMAIL、PHONE、ACCOUNT、PERSON、ADDRESS、IP；空数组表示全部）。
 - `words`：自定义屏蔽词；`wordsAnyCase` 忽略大小写；`wordsWhole` 仅整词匹配。
 - `rules`：用户自定义正则；`action` 可为 `placeholder`、`mask`（固定字符）、`drop`。
 - `allow`：白名单，命中的值永不脱敏。
@@ -122,3 +124,13 @@
 - 规则层应覆盖其中 25 个 `mask` 值（SECRET/EMAIL/PHONE/ACCOUNT）；
 - 其余 22 个 `mask` 值属于 PERSON/ADDRESS，规则层不承诺覆盖，Phase 5 若引入模型再纳入；
 - 全部 144 个 `keep` 值都必须保持原样，这是防误报的硬约束。
+
+## 与上游隐私过滤器的关系
+
+上游 v4.0.29 自带一套纯正则隐私过滤器（`proxy/privacy_filter`，移植自
+packyme/privacy-filter）。本分支只保留它的密钥检测能力（gitleaks 规则集 +
+上下文口令 + 熵兜底），并入 `src-tauri/src/redact/detectors/gitleaks.rs`；
+官方的请求改写、占位符与设置面板已移除，设置中只保留「隐私 → 请求脱敏」一个入口。
+
+许可：packyme/privacy-filter 与 gitleaks 规则集均为 MIT，见同目录
+`LICENSE.packyme-privacy-filter` 与 `LICENSE.gitleaks`。

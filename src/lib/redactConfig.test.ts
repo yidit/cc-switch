@@ -52,14 +52,26 @@ describe("个人信息类型开关", () => {
 
   it("关闭一个类型后只保留其余类型", () => {
     const config = withKindEnabled(makeConfig(), "PHONE", false);
-    expect(config.kinds).toEqual(["EMAIL", "ACCOUNT", "PERSON", "ADDRESS"]);
+    expect(config.kinds).toEqual([
+      "EMAIL",
+      "ACCOUNT",
+      "PERSON",
+      "ADDRESS",
+      "IP",
+    ]);
     expect(isKindEnabled(config, "PHONE")).toBe(false);
     expect(isKindEnabled(config, "EMAIL")).toBe(true);
   });
 
   it("关闭 PERSON 时只影响人名", () => {
     const config = withKindEnabled(makeConfig(), "PERSON", false);
-    expect(config.kinds).toEqual(["EMAIL", "PHONE", "ACCOUNT", "ADDRESS"]);
+    expect(config.kinds).toEqual([
+      "EMAIL",
+      "PHONE",
+      "ACCOUNT",
+      "ADDRESS",
+      "IP",
+    ]);
     expect(isKindEnabled(config, "PERSON")).toBe(false);
     expect(isKindEnabled(config, "ADDRESS")).toBe(true);
   });

@@ -31,7 +31,8 @@ Phase 1–3 完成了规则引擎、代理接入和设置页。Phase 4 处理正
 
 ## 3. fail-closed
 
-- `redact::invalid_rules` 列出空正则和无法编译的自定义规则。
+- `redact::invalid_rules` 列出无法编译的自定义规则；空正则表示「刚添加、还没填」，
+  不算无效规则，引擎直接跳过。
 - `mask_request_body` 返回 `Result<Option<Arc<PlaceholderTable>>, String>`：
   - 总开关关闭 → `Ok(None)`；
   - 规则不可用且开启 `failClosed` → `Err`，handlers 直接返回 500，原文不会发往上游；
@@ -53,9 +54,9 @@ chunk 切在多字节字符中间时，只处理合法前缀、把不完整字�
 
 ## 6. 设置页
 
-- 个人信息类型开关（EMAIL / PHONE / ACCOUNT），全部选中时写回空数组，与后端「空 = 全部」一致。
+- 个人信息类型开关（EMAIL / PHONE / ACCOUNT / PERSON / ADDRESS / IP），全部选中时写回空数组，与后端「空 = 全部」一致。
 - 自定义规则编辑：正则、类型、动作（占位符 / 掩码 / 删除），支持新增和删除；
-  输入框失焦时才保存，避免每敲一个字符就写一次设置。
+  输入框失焦时才保存，避免每敲一个字符就写一次设置。空规则视为「还没填完」，不落盘、也不触发 fail-closed。
 - fail-closed 开关。
 - 预览区展示无效规则的错误信息。
 

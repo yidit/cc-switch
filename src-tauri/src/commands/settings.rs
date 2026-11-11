@@ -103,7 +103,16 @@ pub async fn save_settings(
     let tray_style_changed = merged.native_tray_menu != existing.native_tray_menu;
     let without_login_changed =
         merged.codex_proxy_without_official_login != existing.codex_proxy_without_official_login;
+    // gitleaks 规则首次使用时要编译几百条正则；开启脱敏时在后台预热，
+    // 避免第一个请求承担编译耗时。
+    let warm_secret_rules = merged
+        .redact
+        .as_ref()
+        .is_some_and(|redact| redact.enabled && redact.secrets);
     crate::settings::update_settings(merged).map_err(|e| e.to_string())?;
+    if warm_secret_rules {
+        std::thread::spawn(crate::redact::warm_up_secret_rules);
+    }
 
     // 原生托盘菜单 / 托盘面板当场切换，不用重启。
     if tray_style_changed {
@@ -732,34 +741,6 @@ pub async fn set_optimizer_config(
         .db
         .set_optimizer_config(&config)
         .map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-/// 获取隐私过滤器配置
-#[tauri::command]
-pub async fn get_privacy_filter_config(
-    state: tauri::State<'_, crate::AppState>,
-) -> Result<crate::proxy::types::PrivacyFilterConfig, String> {
-    state
-        .db
-        .get_privacy_filter_config()
-        .map_err(|e| e.to_string())
-}
-
-/// 设置隐私过滤器配置
-#[tauri::command]
-pub async fn set_privacy_filter_config(
-    state: tauri::State<'_, crate::AppState>,
-    config: crate::proxy::types::PrivacyFilterConfig,
-) -> Result<bool, String> {
-    state
-        .db
-        .set_privacy_filter_config(&config)
-        .map_err(|e| e.to_string())?;
-    if config.enabled {
-        // 规则编译有一次性耗时，开关打开时在后台预热，不压到第一个请求上
-        std::thread::spawn(crate::proxy::privacy_filter::warm_up);
-    }
     Ok(true)
 }
 

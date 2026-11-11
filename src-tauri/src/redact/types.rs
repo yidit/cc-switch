@@ -19,6 +19,8 @@ pub enum Kind {
     Email,
     /// 银行卡、IBAN、身份证号等账户信息。
     Account,
+    /// 公网 IPv4 地址。
+    Ip,
     /// 地址，第一阶段不实现。
     Address,
 }
@@ -32,6 +34,7 @@ impl Kind {
             Kind::Phone => "PHONE",
             Kind::Email => "EMAIL",
             Kind::Account => "ACCOUNT",
+            Kind::Ip => "IP",
             Kind::Address => "ADDRESS",
         }
     }
@@ -40,7 +43,7 @@ impl Kind {
     pub fn is_personal(self) -> bool {
         matches!(
             self,
-            Kind::Person | Kind::Phone | Kind::Email | Kind::Account | Kind::Address
+            Kind::Person | Kind::Phone | Kind::Email | Kind::Account | Kind::Ip | Kind::Address
         )
     }
 }
@@ -230,6 +233,7 @@ mod tests {
     fn personal_kinds_are_classified() {
         assert!(!Kind::Secret.is_personal());
         assert!(Kind::Email.is_personal());
+        assert!(Kind::Ip.is_personal());
         assert!(Kind::Address.is_personal());
     }
 }

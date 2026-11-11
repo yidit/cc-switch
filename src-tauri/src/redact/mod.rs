@@ -17,9 +17,11 @@ pub mod proxy;
 pub mod types;
 
 use detectors::{
-    AccountDetector, CustomRuleDetector, EmailDetector, PhoneDetector, SecretDetector, WordDetector,
+    AccountDetector, CustomRuleDetector, EmailDetector, GitleaksDetector, IpDetector,
+    PhoneDetector, SecretDetector, WordDetector,
 };
 
+pub use detectors::gitleaks::warm_up as warm_up_secret_rules;
 pub use detectors::rules::invalid_rules;
 pub use json::{mask_json, restore_json, JsonMaskStats};
 pub use model::ModelEngine;
@@ -50,11 +52,13 @@ impl Engine {
         let mut detectors: Vec<Box<dyn Detector>> = Vec::new();
         if config.secrets {
             detectors.push(Box::new(SecretDetector));
+            detectors.push(Box::new(GitleaksDetector));
         }
         if config.personal {
             detectors.push(Box::new(EmailDetector));
             detectors.push(Box::new(PhoneDetector));
             detectors.push(Box::new(AccountDetector));
+            detectors.push(Box::new(IpDetector));
         }
         if !config.words.is_empty() {
             detectors.push(Box::new(WordDetector::new(

@@ -418,6 +418,7 @@ export type RedactKind =
   | "PHONE"
   | "EMAIL"
   | "ACCOUNT"
+  | "IP"
   | "ADDRESS";
 
 export type RedactAction = "placeholder" | "mask" | "drop";
