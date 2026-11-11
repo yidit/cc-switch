@@ -664,6 +664,68 @@ mod tests {
     }
 
     #[test]
+    fn matches_upstream_privacy_filter_cases() {
+        let cases: &[(&str, bool)] = &[
+            (
+                r"/Users/alice/Documents/notes/My Vault/00.索引/技术指南/密钥速查.md",
+                false,
+            ),
+            (
+                r#"/data/simulations/wind/20260528_sim_run/forward_run_2""#,
+                false,
+            ),
+            (r"/tmp/AbCdEfGh1234567890XyZQwErTyUiOp.log", false),
+            (
+                r"https://example.com/files/AbCdEfGh1234567890XyZQwErTyUiOp",
+                false,
+            ),
+            (r"s3://bucket/aB3xK9pLmN2qR7sT5vW1zY/file.txt", false),
+            (
+                r"registry.io/img@sha256:9f86d081884c7d659a2feaa0c55ad015b1b8a3e6b1d2c4a5e9f8b7d6c5a4b3210",
+                false,
+            ),
+            (r"token=aB3xK9pLmN2qR7sT5vW1zYQwErTyUiOp", true),
+            (r"api_key = aB3xK9pLmN2qR7sT5vW1zYQwErTyUiOp", true),
+            (
+                r"Authorization: Bearer abcDEF1234567890/xyzABC4567890==",
+                true,
+            ),
+            (
+                r"https://x.com/cb?token=aB3xK9pLmN2qR7sT5vW1zYQwErTyUiOp",
+                true,
+            ),
+            (
+                r"https://x.com/open?file=/Users/alice/Documents/a.txt",
+                false,
+            ),
+            (r"order_id=aB3xK9pLmN2qR7sT5vW1zY", false),
+            (r"trace_id=550e8400-e29b-41d4-a716-446655440000", false),
+            (r"commit=9f86d081884c7d659a2feaa0c55ad015", false),
+            (r"secret={{ API_KEY }} 或 token=${TOKEN}", false),
+            (r"我的密码是 Hunter2xyz", true),
+            (r#""密钥速查"、config["api_key"]"#, false),
+            (
+                r"/Users/alice/Documents/notes/My Vault/00.索引/技术指南/密钥速查.md",
+                false,
+            ),
+            (
+                r#"/data/simulations/wind/20260528_sim_run/forward_run_2""#,
+                false,
+            ),
+            (r"api_key.example.com/AbCdEfGh1234567890XyZ", false),
+        ];
+
+        for (input, expect_hit) in cases {
+            let hits = find(input);
+            assert_eq!(
+                !hits.is_empty(),
+                *expect_hit,
+                "case {input:?} 命中结果 {hits:?}"
+            );
+        }
+    }
+
+    #[test]
     fn detects_common_key_formats() {
         let aws = ["AKIA", "ZXCVBNMASDFGHJKL"].concat();
         assert_eq!(find(&format!("aws_key = {aws}")), vec![aws.as_str()]);

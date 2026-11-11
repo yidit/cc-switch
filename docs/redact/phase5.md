@@ -25,7 +25,8 @@ Phase 1–4 的规则层无法可靠识别人名和地址。Phase 5 引入可选
 | `email` / `phone` | EMAIL / PHONE |
 | `account` / `payment_card` | ACCOUNT |
 | `common_secret` | SECRET |
-| `ip_address` / `url` / `private_date` | 不处理（公开信息或日期） |
+| `ip_address` | 不由模型输出，改由内置 IPv4 检测器处理 |
+| `url` / `private_date` | 不处理（公开信息或日期） |
 
 ## 运行时
 
