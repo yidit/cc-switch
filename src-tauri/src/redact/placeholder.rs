@@ -100,18 +100,33 @@ impl PlaceholderTable {
 
     /// 把文本中的占位符还原为原值。
     ///
-    /// 占位符互不重叠，替换顺序不影响结果；表中没有的 `{{...}}` 保持原样。
+    /// 单次扫描 `{{...}}` 片段并查表：不逐项 `contains`/`replace`（占位符多时
+    /// 是 O(n·m)），也不会把还原出来的原值再当成占位符二次替换。表中没有的
+    /// `{{...}}` 保持原样。
     pub fn restore(&self, text: &str) -> String {
-        if self.backward.is_empty() {
+        if self.backward.is_empty() || !text.contains("{{") {
             return text.to_string();
         }
 
-        let mut out = text.to_string();
-        for (placeholder, value) in &self.backward {
-            if out.contains(placeholder) {
-                out = out.replace(placeholder, value);
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(open) = rest.find("{{") {
+            out.push_str(&rest[..open]);
+            let tail = &rest[open..];
+            let candidate = tail.find("}}").map(|end| end + 2);
+            if let Some(end) = candidate {
+                if let Some(value) = self.backward.get(&tail[..end]) {
+                    out.push_str(value);
+                    rest = &tail[end..];
+                    continue;
+                }
             }
+            // 不是已知占位符：先输出第一个 `{`，从下一个字符继续，
+            // 这样 `{{{{...}}` 之类的重叠也能正确前进。
+            out.push('{');
+            rest = &tail[1..];
         }
+        out.push_str(rest);
         out
     }
 
@@ -265,6 +280,18 @@ mod tests {
         let table = PlaceholderTable::with_seed(1);
         let text = "unknown {{EMAIL_abcd2345}} stays";
         assert_eq!(table.restore(text), text);
+    }
+
+    #[test]
+    fn restore_handles_adjacent_and_unknown_placeholders() {
+        let mut table = PlaceholderTable::with_seed(3);
+        let email = table.placeholder_for("alice@example.com", Kind::Email);
+        let text = format!("{email}{{{{EMAIL_unknown0}}}}{email}");
+
+        assert_eq!(
+            table.restore(&text),
+            "alice@example.com{{EMAIL_unknown0}}alice@example.com"
+        );
     }
 
     #[test]

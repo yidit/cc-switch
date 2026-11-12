@@ -154,16 +154,14 @@ impl Engine {
         all.extend(extra.iter().copied());
 
         all.retain(|hit| hit.start < hit.end && hit.end <= text.len());
+        // 模型给出的字节偏移不一定落在字符边界上。debug 下断言不够：release
+        // 里随后的切片会直接 panic，因此这里直接丢弃坏区间，只损失一次命中。
+        all.retain(|hit| text.is_char_boundary(hit.start) && text.is_char_boundary(hit.end));
         // 白名单按原值精确匹配，对内置检测器与自定义词/规则一律生效。
         all.retain(|hit| {
             let value = &text[hit.start..hit.end];
             !config.allow.iter().any(|allowed| allowed.as_str() == value)
         });
-        debug_assert!(
-            all.iter()
-                .all(|hit| text.is_char_boundary(hit.start) && text.is_char_boundary(hit.end)),
-            "检测器返回了非 UTF-8 字符边界的区间"
-        );
 
         all.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
 

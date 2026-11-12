@@ -121,6 +121,13 @@ pub fn restore_response_body(bytes: &[u8], table: &PlaceholderTable) -> Option<V
     }
 }
 
+/// 流式还原最多缓冲的字节数。
+///
+/// SSE 的行以换行结尾，正常情况下 `pending` 只会剩下一个不完整的短行。
+/// 上游若长时间不发送换行，不能无限缓冲（会撑爆内存），超过此值就按纯文本
+/// 还原后立即输出；代价是跨该边界的占位符可能漏还原，属于异常上游下的取舍。
+const MAX_PENDING_BYTES: usize = 8 * 1024 * 1024;
+
 /// 流式响应里单个 chunk 的还原。
 ///
 /// 按行处理 SSE：完整的行立即还原并输出，不完整的行留在 `pending` 等下一个
@@ -143,6 +150,12 @@ pub fn restore_stream_chunk(
         }
     }
     pending.extend_from_slice(&buffer[start..]);
+
+    if pending.len() > MAX_PENDING_BYTES {
+        // 超限：把缓冲当作一段纯文本直接还原输出，避免内存无限增长。
+        let tail = std::mem::take(pending);
+        restore_line(table, &tail, &mut out);
+    }
     out
 }
 
@@ -480,5 +493,21 @@ mod tests {
         let flushed = flush_stream_restore(&table, &mut pending).expect("应返回剩余内容");
         assert_eq!(flushed, vec![0xff, 0xfe, 0x00]);
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn caps_pending_buffer_when_upstream_never_sends_a_newline() {
+        let mut table = PlaceholderTable::with_seed(7);
+        let placeholder = table.placeholder_for("jane.smith@gmail.com", crate::redact::Kind::Email);
+
+        let mut pending = Vec::new();
+        let mut chunk = placeholder.clone().into_bytes();
+        chunk.extend(std::iter::repeat(b'x').take(MAX_PENDING_BYTES + 1));
+
+        let out = restore_stream_chunk(&table, &mut pending, &chunk);
+
+        assert!(pending.is_empty(), "超过上限后不能继续缓冲");
+        let text = String::from_utf8(out).expect("输出应是合法 UTF-8");
+        assert!(text.starts_with("jane.smith@gmail.com"), "{text:.80}");
     }
 }

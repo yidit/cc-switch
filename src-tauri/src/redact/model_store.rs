@@ -219,10 +219,10 @@ async fn download_inner(spec: &RuntimeSpec) -> Result<(), String> {
         .await
         .map_err(|error| format!("创建模型目录失败：{error}"))?;
 
-    // 已经存在的模型文件直接计入进度。
+    // 已经存在的模型文件直接计入进度；必须同时有匹配的 SHA 标记，
+    // 只比对大小会把同尺寸的损坏文件当成可用。
     for file in &MODEL_FILES {
-        let path = dir.join(file.name);
-        if file.size_matches(&path) {
+        if file.is_current(&dir) {
             advance(file.size);
         }
     }
@@ -253,11 +253,12 @@ async fn download_inner(spec: &RuntimeSpec) -> Result<(), String> {
     }
 
     for file in &MODEL_FILES {
-        let path = dir.join(file.name);
-        if file.size_matches(&path) {
+        if file.is_current(&dir) {
             continue;
         }
+        let path = dir.join(file.name);
         download_file(file.url, &path, file.size, file.sha256).await?;
+        write_marker(&dir, file.name, file.sha256).await?;
     }
 
     if !crate::redact::model::files_present(&dir) {
@@ -272,6 +273,31 @@ impl FileSpec {
             .map(|meta| meta.is_file() && meta.len() == self.size)
             .unwrap_or(false)
     }
+
+    /// 文件存在、大小正确，且校验标记与预期 SHA-256 一致。
+    ///
+    /// 只比大小不够：同尺寸的损坏文件会被永久当成可用。标记由下载成功后写入，
+    /// 旧版本下载的文件没有标记，会重新下载一次。
+    fn is_current(&self, dir: &Path) -> bool {
+        self.size_matches(&dir.join(self.name)) && marker_matches(dir, self.name, self.sha256)
+    }
+}
+
+/// 每个文件下载成功后写入的 SHA-256 标记路径。
+fn marker_path(dir: &Path, name: &str) -> std::path::PathBuf {
+    dir.join(format!("{name}.sha256"))
+}
+
+fn marker_matches(dir: &Path, name: &str, sha: &str) -> bool {
+    std::fs::read_to_string(marker_path(dir, name))
+        .map(|content| content.trim() == sha)
+        .unwrap_or(false)
+}
+
+async fn write_marker(dir: &Path, name: &str, sha: &str) -> Result<(), String> {
+    tokio::fs::write(marker_path(dir, name), sha)
+        .await
+        .map_err(|error| format!("写入校验标记失败：{error}"))
 }
 
 fn advance(bytes: u64) {
@@ -393,6 +419,13 @@ fn extract_zip(archive: &Path, member: &str, output: &Path) -> Result<(), String
 
 /// 删除模型文件；已加载的实例会被丢弃。
 pub fn remove_model() -> Result<(), String> {
+    // 下载进行中删除目录会让后续 rename 失败，并留下半成品。
+    {
+        let state = state().lock().map_err(|_| "下载状态不可用".to_string())?;
+        if state.running {
+            return Err("模型正在下载中，请稍后再删除".to_string());
+        }
+    }
     crate::redact::model::reset_engine();
     let dir = model_dir();
     if dir.exists() {

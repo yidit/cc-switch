@@ -73,24 +73,19 @@ async fn apply_request_redaction(
         ctx.conversation_fingerprint = crate::proxy::forwarder::conversation_fingerprint(body);
     }
 
-    // 本地模型推理是 CPU 密集操作，放到阻塞线程里执行，避免占住异步运行时。
-    if config.model.enabled {
-        let mut owned = body.clone();
-        let (masked, result) = tokio::task::spawn_blocking(move || {
-            let result = crate::redact::proxy::mask_request_body(&mut owned, &config);
-            (owned, result)
-        })
-        .await
-        .map_err(|error| ProxyError::Internal(format!("脱敏任务失败：{error}")))?;
+    // 规则扫描和本地模型推理都是 CPU 密集操作，统一放到阻塞线程里执行，
+    // 避免占住异步运行时。请求体直接移入任务，不再整包 clone：带图片的请求
+    // 可能有几十 MB，复制会让峰值内存翻倍。
+    let mut owned = std::mem::take(body);
+    let (masked, result) = tokio::task::spawn_blocking(move || {
+        let result = crate::redact::proxy::mask_request_body(&mut owned, &config);
+        (owned, result)
+    })
+    .await
+    .map_err(|error| ProxyError::Internal(format!("脱敏任务失败：{error}")))?;
 
-        *body = masked;
-        if let Some(table) = result.map_err(ProxyError::Internal)? {
-            ctx.redaction = Some(table);
-        }
-        return Ok(());
-    }
-
-    match crate::redact::proxy::mask_request_body(body, &config) {
+    *body = masked;
+    match result {
         Ok(Some(table)) => {
             ctx.redaction = Some(table);
             Ok(())

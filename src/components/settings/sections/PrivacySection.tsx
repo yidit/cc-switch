@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download, Loader2, Play, Plus, Trash2 } from "lucide-react";
 import { settingsApi } from "@/lib/api";
@@ -140,8 +140,17 @@ export function PrivacySection({ settings, onAutoSave }: PrivacySectionProps) {
     setRuleDrafts(redact.rules);
   }, [redact.rules]);
 
+  // 同一帧里连续修改多个开关时，settings 还没刷新，直接用 render 里的
+  // `redact` 做基底会互相覆盖；用 ref 串行化每次修改。
+  const latestRedact = useRef<RedactConfig>(redact);
+  useEffect(() => {
+    latestRedact.current = redact;
+  }, [redact]);
+
   const update = (patch: Partial<RedactConfig>) => {
-    void onAutoSave({ redact: { ...redact, ...patch } });
+    const next = { ...latestRedact.current, ...patch };
+    latestRedact.current = next;
+    void onAutoSave({ redact: next });
   };
 
   const commitRules = (rules: RedactRule[]) => {

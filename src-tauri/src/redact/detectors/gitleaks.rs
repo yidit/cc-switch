@@ -449,7 +449,12 @@ impl SecretRules {
         for caps in RE_CONTEXT_SECRET.captures_iter(text) {
             let Some(m) = caps.get(2) else { continue };
             let value = m.as_str();
-            if is_template_var(value) || is_context_placeholder(value) {
+            // 值形态过滤与 `secret.rs` 共用：避免把代码标识符、类型名、
+            // 函数调用当成口令（`api_key = String::from(...)` 等）。
+            if is_template_var(value)
+                || is_context_placeholder(value)
+                || !super::secret::is_plausible_secret_value(value)
+            {
                 continue;
             }
             push(&mut spans, m.start(), m.end());
@@ -750,6 +755,25 @@ mod tests {
         assert!(find(&format!("sha256:{sha}")).is_empty());
         assert!(find("id=550e8400-e29b-41d4-a716-446655440000").is_empty());
         assert!(find("api_key=REPLACE_ME").is_empty());
+    }
+
+    #[test]
+    fn ignores_code_shaped_context_values() {
+        // 上下文口令规则不能把普通代码当成口令，值形态过滤与 secret.rs 共用。
+        let cases = [
+            concat!("let api_", "key = String", "::from(\"API_", "KEY\");"),
+            concat!(
+                "max_",
+                "tokens_per_request: default_model_max_",
+                "tokens(),"
+            ),
+            concat!("type Token = ", "String", ";"),
+            concat!("secret_", "key_name = config.secret,"),
+        ];
+        for case in cases {
+            let hits = find(case);
+            assert!(hits.is_empty(), "{case:?} -> {hits:?}");
+        }
     }
 
     #[test]

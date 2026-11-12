@@ -105,17 +105,22 @@ fn rules() -> &'static [Rule] {
                 1,
                 always,
             ),
-            // KEY=value / KEY: value 形态，键名必须含敏感词。
+            // KEY=value / KEY: value 形态，键名必须按分隔符组成敏感词。
+            //
+            // 键名用「分隔符分段」而不是任意子串：`tokenizers::Tokenizer`、
+            // `max_tokens_per_request: ...` 这类普通代码不应命中。
             Rule::new(
-                r#"(?i)\b[A-Za-z0-9_.-]*(?:api_key|apikey|secret|token|password|passwd|private_key|access_key)[A-Za-z0-9_.-]*\s*[:=]\s*["']?([^\s"'`,;，。]{8,})"#,
+                r#"(?i)\b(?:[A-Za-z0-9]+[_.-])*(?:api[_-]?key|apikey|secret|token|password|passwd|private[_-]?key|access[_-]?key)(?:[_.-][A-Za-z0-9]+)*\s*[:=]\s*["']?([^\s"'`,;，。]{8,})"#,
                 1,
-                always,
+                is_plausible_secret_value,
             ),
             // 自然语言：password is … / password: …
+            //
+            // 关键词两侧都要有词边界，避免从 `tokenizers` 里截出 `token`。
             Rule::new(
-                r#"(?i)\b(?:password|passwd|secret|token|api[ _-]?key)\s*(?:is|was|are|[:=])\s*["']?([^\s"',，。;；]{6,})"#,
+                r#"(?i)\b(?:password|passwd|secret|token|api[ _-]?key)\b\s*(?:is|was|are|[:=])\s*["']?([^\s"',，。;；]{6,})"#,
                 1,
-                always,
+                is_plausible_secret_value,
             ),
             // 中文：密码/口令/密钥 + 是/为/:/=
             Rule::new(
@@ -149,6 +154,138 @@ fn acceptable(value: &str) -> bool {
     !matches!(
         lower.as_str(),
         "true" | "false" | "null" | "none" | "undefined" | "password"
+    )
+}
+
+/// 判断上下文规则捕获到的值是否「像凭据」，而不是代码标识符或类型名。
+///
+/// 上下文规则（`KEY = value`、`password is ...`）只看结构，值必须再过滤一轮，
+/// 否则 `use tokenizers::Tokenizer;`、`max_tokens_per_request: default_model_max_tokens()`
+/// 这类普通代码会被替换成占位符，发往上游的代码就失真了。
+///
+/// 过滤只针对「明确的代码形态」，纯单词口令（如 `correcthorsebatterystaple`）
+/// 仍然放行，避免把真实口令漏掉。
+pub(crate) fn is_plausible_secret_value(value: &str) -> bool {
+    let value = value.trim();
+    if value.len() < 4 || value.len() > 65536 {
+        return false;
+    }
+    if value.contains("{{") || value.starts_with('$') {
+        return false;
+    }
+
+    // 代码形态：以标点开头、函数调用、路径/泛型、插值。
+    if value.starts_with([':', '{', '(', '.', ',', '<']) {
+        return false;
+    }
+    if value.contains('(')
+        || value.contains("::")
+        || value.contains("->")
+        || value.contains('{')
+        || value.contains('}')
+        || (value.contains('<') && value.contains('>'))
+    {
+        return false;
+    }
+
+    let lower = value.to_ascii_lowercase();
+    if is_language_type_name(&lower) {
+        return false;
+    }
+    // `config.secret` / `user.profile.name` 这类成员访问：只有点号分段，
+    // 每段都是标识符且不含数字。真实口令很少是这个形状。
+    if value.contains('.')
+        && !value.chars().any(|ch| ch.is_ascii_digit())
+        && value.split('.').all(is_ascii_identifier)
+    {
+        return false;
+    }
+
+    true
+}
+
+/// 单个标识符：字母或下划线开头，其余为字母数字/下划线。
+fn is_ascii_identifier(part: &str) -> bool {
+    let mut chars = part.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+/// 常见编程语言/数据库类型名与字面量。它们出现在 `KEY = value` 的右侧时
+/// 说明这是类型标注或默认值，不是凭据。
+fn is_language_type_name(lower: &str) -> bool {
+    matches!(
+        lower,
+        "string"
+            | "str"
+            | "char"
+            | "bool"
+            | "boolean"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "vec"
+            | "option"
+            | "result"
+            | "hashmap"
+            | "hashset"
+            | "btreemap"
+            | "value"
+            | "json"
+            | "object"
+            | "array"
+            | "slice"
+            | "bytes"
+            | "byte"
+            | "unit"
+            | "void"
+            | "any"
+            | "self"
+            | "none"
+            | "null"
+            | "nil"
+            | "undefined"
+            | "true"
+            | "false"
+            | "int"
+            | "integer"
+            | "long"
+            | "float"
+            | "double"
+            | "number"
+            | "decimal"
+            | "bigint"
+            | "text"
+            | "varchar"
+            | "blob"
+            | "datetime"
+            | "timestamp"
+            | "uuid"
+            | "path"
+            | "pathbuf"
+            | "osstring"
+            | "cow"
+            | "box"
+            | "rc"
+            | "arc"
+            | "mutex"
+            | "rwlock"
+            | "refcell"
+            | "cell"
     )
 }
 
@@ -239,6 +376,54 @@ mod tests {
     #[test]
     fn ignores_slugs_that_merely_start_with_sk() {
         assert!(detect("sk-hynix-third-quarter-profit-report.html").is_empty());
+    }
+
+    #[test]
+    fn ignores_code_shaped_values() {
+        // 字符串用 concat! 拼接：这些片段本身会被「像密钥」地误判，
+        // 拼接后既保留用例语义，也避免用例文本被别的过滤层改写。
+        let cases = [
+            concat!("use token", "izers::Token", "izer;"),
+            concat!(
+                "max_",
+                "tokens_per_request: default_model_max_",
+                "tokens(),"
+            ),
+            concat!(
+                "assert_eq!(value, format!(\"",
+                "tokens",
+                "={",
+                "tokens",
+                "}\"));"
+            ),
+            concat!("let api_", "key = String", "::from(\"API_", "KEY\");"),
+            concat!("type Token = ", "String", ";"),
+            concat!("secret_", "key_name = config.secret,"),
+        ];
+        for case in cases {
+            let hits = detect(case);
+            assert!(hits.is_empty(), "{case:?} -> {hits:?}");
+        }
+    }
+
+    #[test]
+    fn keeps_word_like_passwords() {
+        // 纯单词口令不能因为「像标识符」被放过。
+        assert_eq!(
+            detect("password: correcthorsebatterystaple"),
+            vec!["correcthorsebatterystaple"]
+        );
+        assert_eq!(detect("password: hunter2Xq9z"), vec!["hunter2Xq9z"]);
+    }
+
+    #[test]
+    fn keeps_structured_passwords_with_unusual_characters() {
+        // 值形态过滤只作用于两条上下文规则；连接串等结构化规则不受影响，
+        // 带花括号的真实密码仍要命中。
+        assert_eq!(
+            detect("postgres://app:Pss{w0rd}@db.internal:5432/orders"),
+            vec!["Pss{w0rd}"]
+        );
     }
 
     #[test]
