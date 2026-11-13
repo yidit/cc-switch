@@ -230,6 +230,9 @@ impl ModelEngine {
             decode_window(&scores, start, end, offsets, threshold, &mut hits);
 
             *budget = budget.saturating_sub(processed);
+            // 让出一次时间片：长文本要连续跑多个窗口，等待同一会话锁的代理请求
+            // 可以在窗口之间拿到锁，不会被整段推理一直压住。
+            std::thread::yield_now();
         }
 
         Ok((merge_hits(hits), true))

@@ -31,6 +31,12 @@ pub async fn preview_redaction(text: String) -> Result<RedactPreviewResult, Stri
         .map_err(|error| format!("预览失败：{error}"))?
 }
 
+/// 预览的模型推理预算上限。
+///
+/// 预览只是看一段示例的效果；沿用 `maxTokensPerRequest`（可调到 32768）会让一次
+/// 预览占满 CPU 数秒，期间正在流式输出的会话和代理请求都会被拖慢。
+const PREVIEW_MODEL_BUDGET: usize = 512;
+
 fn preview(text: &str) -> Result<RedactPreviewResult, String> {
     let mut config = crate::settings::redact_config();
     config.enabled = true;
@@ -53,7 +59,12 @@ fn preview(text: &str) -> Result<RedactPreviewResult, String> {
 
     let (extra, used_model) = match &model {
         Some(model) => {
-            let mut budget = config.model.max_tokens_per_request;
+            // 预览只截取前 512 token 交给模型；示例文本通常远小于这个量级，
+            // 可以避免设置里调大预算后一次预览长时间占住 CPU 和模型会话。
+            let mut budget = config
+                .model
+                .max_tokens_per_request
+                .min(PREVIEW_MODEL_BUDGET);
             match model.detect(text, &config, &mut budget) {
                 Ok(hits) => (hits, true),
                 Err(error) => {
