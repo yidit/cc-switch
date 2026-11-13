@@ -764,8 +764,9 @@ dependencies = [
 
 [[package]]
 name = "cc-switch"
-version = "4.0.30"
+version = "4.0.31"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "arboard",
  "async-stream",
