@@ -1,0 +1,135 @@
+name: Build Windows x64
+
+# 只做 Windows x64 的构建产物，供手动下载验证。
+# 与 release.yml 不同：只能手动触发，不跑发布矩阵、不做签名、不创建 Release。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-x64-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    name: Windows x64
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      # rust-toolchain.toml 是编译器版本的唯一来源：直接装它，免得先装 stable 再被 rustup 换掉
+      - name: Read pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+
+      - name: Setup pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: |
+          corepack enable
+          corepack install
+          node --version
+          pnpm --version
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri App (Windows x64)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 只发布 MSI（和便携版 exe），不打用不上的 NSIS 安装包
+          pnpm tauri build --bundles msi
+
+      - name: Prepare Windows Assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          # e.g., v3.5.0；手动触发时可能是分支名，斜杠会被当成目录，换成 -
+          $VERSION = $env:GITHUB_REF_NAME -replace '/', '-'
+          $targetRoot = 'src-tauri/target/release'
+
+          # 仅打包 MSI 安装器
+          $msi = Get-ChildItem -Path (Join-Path $targetRoot 'bundle/msi') -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $msi) {
+            # 兜底：全局搜索 .msi
+            $msi = Get-ChildItem -Path (Join-Path $targetRoot 'bundle') -Recurse -Include *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if ($null -eq $msi) {
+            throw 'No Windows MSI installer found (x86_64)'
+          }
+
+          # #8534：旧版本的应用内更新器以 `msiexec /passive /promptrestart` 安装、不带任何 REBOOT
+          # 选项，文件被占用时会不经提示直接重启系统，所以 MSI 自身必须带 REBOOT=ReallySuppress。
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($msi.FullName, 0))
+          $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('SELECT `Value` FROM `Property` WHERE `Property`=''REBOOT'''))
+          $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+          $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+          $reboot = if ($null -ne $record) { $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1) } else { $null }
+          $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+          if ($reboot -ne 'ReallySuppress') {
+            throw "MSI Property table must set REBOOT=ReallySuppress (found: '$reboot') - see #8534"
+          }
+          Write-Host "MSI REBOOT property: $reboot"
+
+          $dest = "CC-Switch-$VERSION-Windows.msi"
+          Copy-Item $msi.FullName (Join-Path release-assets $dest)
+          Write-Host "Installer copied: $dest"
+
+          # 绿色版（portable）：仅可执行文件打 zip
+          $exeCandidates = @(
+            'src-tauri/target/release/cc-switch.exe',
+            'src-tauri/target/x86_64-pc-windows-msvc/release/cc-switch.exe'
+          )
+          $exePath = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($null -ne $exePath) {
+            $portableDir = 'release-assets/CC-Switch-Portable'
+            New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+            Copy-Item $exePath $portableDir
+            @(
+              '# CC Switch portable build marker',
+              'portable=true'
+            ) | Set-Content -Path (Join-Path $portableDir 'portable.ini') -Encoding UTF8
+            $portableZip = "release-assets/CC-Switch-$VERSION-Windows-Portable.zip"
+            Compress-Archive -Path "$portableDir/*" -DestinationPath $portableZip -Force
+            Remove-Item -Recurse -Force $portableDir
+            Write-Host "Windows portable zip created: CC-Switch-$VERSION-Windows-Portable.zip"
+          } else {
+            Write-Warning 'Portable exe not found'
+          }
+
+      - name: Compute artifact name
+        id: artifact
+        shell: bash
+        run: echo "value=windows-x64-${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: List prepared assets
+        shell: bash
+        run: |
+          ls -la release-assets || true
+
+      - name: Upload Windows x64 artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.artifact.outputs.value }}
+          path: release-assets/*
+          if-no-files-found: error
