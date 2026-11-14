@@ -1177,7 +1177,7 @@
       "previewPlaceholder": "Text mit E-Mail-Adresse, Telefonnummer oder Schlüssel einfügen…",
       "previewButton": "Vorschau",
       "previewHits": "{{hits}} Treffer, {{placeholders}} Platzhalter",
-      "proxyOnly": "Hinweis: Nur Anfragen über den lokalen Proxy von CC Switch werden redigiert; direkter Provider-Verkehr ist nicht betroffen.",
+      "proxyOnly": "Hinweis: Nur Anfragen über den lokalen Proxy von CC Switch werden redigiert; direkter Anbieter-Verkehr ist nicht betroffen.",
       "failClosed": "Anfragen blockieren, wenn die Konfiguration ungültig ist",
       "failClosedDescription": "Fehler zurückgeben, statt den Originaltext zu senden, wenn eine eigene Regel nicht verwendet werden kann.",
       "kindsTitle": "Arten personenbezogener Daten",

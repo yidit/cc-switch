@@ -1159,7 +1159,7 @@
     },
     "privacy": {
       "title": "İstek gizleme",
-      "description": "Hassas değerleri istekler üst sunucuya gitmeden önce değiştirir ve yanıtlarda geri yükler. Yalnızca CC Switch yerel proxy'sinden geçen istekler işlenir.",
+      "description": "Hassas değerleri istekler üst akışa gitmeden önce değiştirir ve yanıtlarda geri yükler. Yalnızca CC Switch yerel proxy'sinden geçen istekler işlenir.",
       "enabled": "İstek gizlemeyi etkinleştir",
       "enabledDescription": "Kapalıyken istekler ve yanıtlar değiştirilmez.",
       "secrets": "Sırları ve kimlik bilgilerini gizle",
