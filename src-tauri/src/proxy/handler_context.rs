@@ -9,10 +9,7 @@ use crate::proxy::{
     extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
-    types::{
-        AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, PrivacyFilterConfig,
-        RectifierConfig,
-    },
+    types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
     ProxyError,
 };
 use axum::http::HeaderMap;
@@ -74,10 +71,12 @@ pub struct RequestContext {
     pub optimizer_config: OptimizerConfig,
     /// Copilot 优化器配置
     pub copilot_optimizer_config: CopilotOptimizerConfig,
-    /// 隐私过滤器配置
-    pub privacy_filter_config: PrivacyFilterConfig,
     /// Stack 模型的请求（`mode::stack`）：直达 Stack 里的那一家，不读也不写任何路由状态。
     pub is_stack: bool,
+    /// 请求脱敏的占位符映射；响应写出前据此还原。未开启或未命中时为 `None`。
+    pub redaction: Option<std::sync::Arc<crate::redact::PlaceholderTable>>,
+    /// 脱敏前基于原文算好的会话指纹（用于 opencode 上游的稳定会话标识）。
+    pub conversation_fingerprint: Option<String>,
 }
 
 impl RequestContext {
@@ -116,7 +115,6 @@ impl RequestContext {
         let rectifier_config = state.db.get_rectifier_config().unwrap_or_default();
         let optimizer_config = state.db.get_optimizer_config().unwrap_or_default();
         let copilot_optimizer_config = state.db.get_copilot_optimizer_config().unwrap_or_default();
-        let privacy_filter_config = state.db.get_privacy_filter_config().unwrap_or_default();
 
         // 提取 Session ID
         let session_result = extract_session_id(headers, body, app_type_str);
@@ -231,8 +229,9 @@ impl RequestContext {
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,
-            privacy_filter_config,
             is_stack,
+            redaction: None,
+            conversation_fingerprint: None,
         })
     }
 
@@ -304,7 +303,7 @@ impl RequestContext {
         )
         .stack_request(self.is_stack)
         .failover_chain(self.app_config.auto_failover_enabled)
-        .privacy_filter(self.privacy_filter_config.clone())
+        .with_conversation_fingerprint(self.conversation_fingerprint.clone())
     }
 
     /// 获取 Provider 列表（用于故障转移）

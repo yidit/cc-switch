@@ -1,6 +1,9 @@
-//! 密钥 / 凭证检测：gitleaks 规则（关键词预筛）+ 上下文口令 + 高熵兜底
+//! 密钥 / 凭证检测：gitleaks 规则（关键词预筛）+ 上下文口令 + 高熵兜底。
+//!
+//! 规则集与判定逻辑移植自 CC Switch 上游的隐私过滤器
+//! （`proxy/privacy_filter/secrets.rs`，源自 packyme/privacy-filter，MIT）。
 
-use super::{Kind, Span};
+use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
 use aho_corasick::{AhoCorasick, MatchKind};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -71,6 +74,22 @@ const ASSIGNMENT_CHARS: &[u8] = b" \t\r\n=:'\"";
 
 /// 业务标识符的常见变量名后缀。`order_id=xxxxx` 这类不应被当密钥。
 const BENIGN_ID_SUFFIXES: &[&str] = &["_id", "_uuid", "_uid", "_oid", "_no", "_seq"];
+
+/// 模型调用、请求等内部标识的前缀。它们熵很高，但不是凭证。
+const BENIGN_ID_PREFIXES: &[&str] = &[
+    "toolu_",
+    "tool_",
+    "call_",
+    "req_",
+    "msg_",
+    "resp_",
+    "run_",
+    "asst_",
+    "thread_",
+    "file_",
+    "file-",
+    "chatcmpl-",
+];
 
 /// 常见占位符词（大小写不敏感的子串匹配）
 const COMMON_PLACEHOLDERS: &[&str] = &[
@@ -201,7 +220,7 @@ impl RuleAllowlist {
             .filter_map(|pattern| match Regex::new(pattern) {
                 Ok(re) => Some(re),
                 Err(e) => {
-                    log::warn!("[PrivacyFilter] Skipped incompatible allowlist regex: {e}");
+                    log::warn!("[redact] Skipped incompatible allowlist regex: {e}");
                     None
                 }
             })
@@ -249,10 +268,9 @@ impl RuleAllowlist {
     }
 }
 
-pub(super) struct SecretDetector {
+pub(super) struct SecretRules {
     rules: Vec<SecretRule>,
-    /// 正则编译失败被跳过的规则数（语法不兼容，或编译后超出 regex 默认的 10 MB 上限：
-    /// generic-api-key、pypi-upload-token、vault-batch-token 属于后者）
+    /// 因正则语法不兼容被跳过的规则数
     skipped: usize,
     /// 关键词预筛：所有规则的关键词共用一个自动机，一遍扫描得出哪些规则需要跑正则
     gate: KeywordGate,
@@ -305,7 +323,7 @@ impl KeywordGate {
             {
                 Ok(ac) => Some(ac),
                 Err(e) => {
-                    log::warn!("[PrivacyFilter] Keyword automaton build failed, falling back: {e}");
+                    log::warn!("[redact] 关键词自动机构建失败，退回逐条匹配: {e}");
                     None
                 }
             }
@@ -317,9 +335,9 @@ impl KeywordGate {
         }
     }
 
-    /// 返回每条规则是否需要跑正则
+    /// 返回每条规则是否需要跑正则。
     fn active_rules(&self, rules: &[SecretRule], text: &str) -> Vec<bool> {
-        /// 标记规则为活跃，返回是否所有规则都已活跃
+        /// 标记规则为活跃，返回是否所有规则都已活跃。
         fn mark(active: &mut [bool], remaining: &mut usize, i: usize) -> bool {
             if !active[i] {
                 active[i] = true;
@@ -399,8 +417,8 @@ struct TomlAllowlist {
     paths: Vec<String>,
 }
 
-impl SecretDetector {
-    pub(super) fn from_gitleaks_toml(toml_text: &str) -> Self {
+impl SecretRules {
+    fn from_gitleaks_toml(toml_text: &str) -> Self {
         let mut sd = Self {
             rules: Vec::new(),
             skipped: 0,
@@ -435,16 +453,17 @@ impl SecretDetector {
                     });
                 }
             }
-            Err(e) => log::warn!("[PrivacyFilter] Failed to parse gitleaks rules: {e}"),
+            Err(e) => log::warn!("[redact] Failed to parse gitleaks rules: {e}"),
         }
         if sd.rules.is_empty() {
             sd.load_builtin();
         }
+        // 规则集确定后再建自动机；关键词取自各规则已小写化的列表。
         sd.gate = KeywordGate::build(&sd.rules);
         sd
     }
 
-    pub(super) fn stats(&self) -> (usize, usize) {
+    fn stats(&self) -> (usize, usize) {
         (self.rules.len(), self.skipped)
     }
 
@@ -478,59 +497,24 @@ impl SecretDetector {
         }
     }
 
-    pub(super) fn detect(&self, text: &str) -> Vec<Span> {
-        self.detect_with_active(text, &self.gate.active_rules(&self.rules, text))
-    }
-
-    /// 旧版预筛：整体小写后逐条 contains。只用于对拍测试，证明自动机预筛与它等价。
-    #[cfg(test)]
-    pub(super) fn active_rules_naive(&self, text: &str) -> Vec<bool> {
-        let low = text.to_lowercase();
-        self.rules
-            .iter()
-            .map(|r| r.keywords.is_empty() || r.keywords.iter().any(|k| low.contains(k.as_str())))
-            .collect()
-    }
-
-    /// 旧版预筛下的 Route 1–3 原始命中（测试用：和 [`Self::detect`] 逐个区间对拍）
-    #[cfg(test)]
-    pub(super) fn detect_naive(&self, text: &str) -> Vec<Span> {
-        self.detect_with_active(text, &self.active_rules_naive(text))
-    }
-
-    /// 去掉自动机，强制走构建失败时的回退路径（测试用）
-    #[cfg(test)]
-    pub(super) fn without_automaton(mut self) -> Self {
-        self.gate.automaton = None;
-        self
-    }
-
-    #[cfg(test)]
-    pub(super) fn active_rules(&self, text: &str) -> Vec<bool> {
-        self.gate.active_rules(&self.rules, text)
-    }
-
-    /// 全部规则的小写关键词（测试用：拿来构造对拍语料）
-    #[cfg(test)]
-    pub(super) fn all_keywords(&self) -> Vec<String> {
-        let mut all: Vec<String> = self.rules.iter().flat_map(|r| r.keywords.clone()).collect();
-        all.sort();
-        all.dedup();
-        all
-    }
-
-    fn detect_with_active(&self, text: &str, active: &[bool]) -> Vec<Span> {
+    fn detect(&self, text: &str) -> Vec<Hit> {
         let mut spans = Vec::new();
-        let push = |spans: &mut Vec<Span>, start, end| {
-            spans.push(Span {
+        let push = |spans: &mut Vec<Hit>, start, end| {
+            spans.push(Hit {
                 start,
                 end,
                 kind: Kind::Secret,
+                action: Action::Placeholder,
             })
         };
 
-        // Route 1: gitleaks 规则，关键词预筛 —— 只对命中关键词的规则跑正则
-        for (r, _) in self.rules.iter().zip(active).filter(|(_, &on)| on) {
+        // Route 1: gitleaks 规则，关键词预筛 —— 只对命中关键词的规则跑正则。
+        // 关键词用单个自动机一遍扫描，避免逐条 contains 导致的重复全文扫描。
+        let active = self.gate.active_rules(&self.rules, text);
+        for (index, r) in self.rules.iter().enumerate() {
+            if !active[index] {
+                continue;
+            }
             for caps in r.re.captures_iter(text) {
                 let whole = caps.get(0).unwrap();
                 let m = if r.whole_secret {
@@ -566,6 +550,7 @@ impl SecretDetector {
                         || is_business_id_assignment(whole.as_str())
                         || cand.contains(',')))
                     || is_template_var(cand)
+                    || is_benign_id(cand)
                     || is_likely_placeholder(cand)
                 {
                     continue;
@@ -578,7 +563,12 @@ impl SecretDetector {
         for caps in RE_CONTEXT_SECRET.captures_iter(text) {
             let Some(m) = caps.get(2) else { continue };
             let value = m.as_str();
-            if is_template_var(value) || is_context_placeholder(value) {
+            // 值形态过滤与 `secret.rs` 共用：避免把代码标识符、类型名、
+            // 函数调用当成口令（`api_key = String::from(...)` 等）。
+            if is_template_var(value)
+                || is_context_placeholder(value)
+                || !super::secret::is_plausible_secret_value(value)
+            {
                 continue;
             }
             push(&mut spans, m.start(), m.end());
@@ -597,6 +587,7 @@ impl SecretDetector {
                 continue;
             }
             if is_template_var(cand)
+                || is_benign_id(cand)
                 || is_hex_hash(cand)
                 || is_uuid(cand)
                 || is_business_id_assignment(whole.as_str())
@@ -633,6 +624,12 @@ fn looks_like_url_match(s: &str) -> bool {
 fn is_likely_placeholder(s: &str) -> bool {
     let upper = s.to_uppercase();
     COMMON_PLACEHOLDERS.iter().any(|p| upper.contains(p))
+}
+
+/// 工具调用 / 请求 ID 这类内部标识，熵高但不是密钥。
+fn is_benign_id(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    BENIGN_ID_PREFIXES.iter().any(|p| lower.starts_with(p))
 }
 
 /// 上下文口令的 value 是否只是占位。先去掉两端标点，让 `string,` / `&str` / `string[]` 也能对上词表。
@@ -738,4 +735,208 @@ fn shannon_entropy(s: &str) -> f64 {
             -p * p.log2()
         })
         .sum()
+}
+
+/// 编译好的 gitleaks 规则；首次使用时加载，之后只读复用。
+static RULES: Lazy<SecretRules> = Lazy::new(|| {
+    let rules = SecretRules::from_gitleaks_toml(include_str!("gitleaks.toml"));
+    let (loaded, skipped) = rules.stats();
+    log::info!("[redact] 已加载 {loaded} 条 gitleaks 密钥规则（跳过 {skipped} 条）");
+    rules
+});
+
+/// 预热：提前编译规则，避免第一个请求承担编译耗时。
+pub fn warm_up() {
+    Lazy::force(&RULES);
+}
+
+/// 基于 gitleaks 规则集的密钥检测器。
+pub struct GitleaksDetector;
+
+impl Detector for GitleaksDetector {
+    fn detect(&self, text: &str, config: &RedactConfig) -> Vec<Hit> {
+        // SECRET 只受 `secrets` 开关控制；`kinds` 只限定个人信息类型，
+        // 否则用户关掉任一个人信息类型时，密钥检测会被静默关闭。
+        if !config.secrets || text.trim().is_empty() {
+            return Vec::new();
+        }
+        RULES.detect(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn find(text: &str) -> Vec<&str> {
+        let config = RedactConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        GitleaksDetector
+            .detect(text, &config)
+            .into_iter()
+            .map(|hit| &text[hit.start..hit.end])
+            .collect()
+    }
+
+    #[test]
+    fn keyword_gate_matches_the_naive_prefilter() {
+        // 自动机预筛必须与「整体小写后逐条 contains」完全一致：
+        // 覆盖大小写混排、无命中、以及会走非 ASCII 小写路径的文本。
+        let rules = &*RULES;
+        let samples = [
+            "plain code without any credential",
+            "Authorization: Bearer abcDEF1234567890",
+            "my PASSWORD is Hunter2xyz",
+            "Kubernetes Secret Token",
+            "开尔文符号 K 与 İstanbul 会让 to_lowercase 展开",
+            "sk-proj-Qm7vT2xLk9RbW4nZpE6sJc8YhD3fGa5uKiN1oVr0",
+        ];
+        for text in samples {
+            let active = rules.gate.active_rules(&rules.rules, text);
+            let low = text.to_lowercase();
+            let naive: Vec<bool> = rules
+                .rules
+                .iter()
+                .map(|rule| {
+                    rule.keywords.is_empty()
+                        || rule
+                            .keywords
+                            .iter()
+                            .any(|keyword| low.contains(keyword.as_str()))
+                })
+                .collect();
+            assert_eq!(active, naive, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn matches_upstream_privacy_filter_cases() {
+        let cases: &[(&str, bool)] = &[
+            (
+                r"/Users/alice/Documents/notes/My Vault/00.索引/技术指南/密钥速查.md",
+                false,
+            ),
+            (
+                r#"/data/simulations/wind/20260528_sim_run/forward_run_2""#,
+                false,
+            ),
+            (r"/tmp/AbCdEfGh1234567890XyZQwErTyUiOp.log", false),
+            (
+                r"https://example.com/files/AbCdEfGh1234567890XyZQwErTyUiOp",
+                false,
+            ),
+            (r"s3://bucket/aB3xK9pLmN2qR7sT5vW1zY/file.txt", false),
+            (
+                r"registry.io/img@sha256:9f86d081884c7d659a2feaa0c55ad015b1b8a3e6b1d2c4a5e9f8b7d6c5a4b3210",
+                false,
+            ),
+            (r"token=aB3xK9pLmN2qR7sT5vW1zYQwErTyUiOp", true),
+            (r"api_key = aB3xK9pLmN2qR7sT5vW1zYQwErTyUiOp", true),
+            (
+                r"Authorization: Bearer abcDEF1234567890/xyzABC4567890==",
+                true,
+            ),
+            (
+                r"https://x.com/cb?token=aB3xK9pLmN2qR7sT5vW1zYQwErTyUiOp",
+                true,
+            ),
+            (
+                r"https://x.com/open?file=/Users/alice/Documents/a.txt",
+                false,
+            ),
+            (r"order_id=aB3xK9pLmN2qR7sT5vW1zY", false),
+            (r"trace_id=550e8400-e29b-41d4-a716-446655440000", false),
+            (r"commit=9f86d081884c7d659a2feaa0c55ad015", false),
+            (r"secret={{ API_KEY }} 或 token=${TOKEN}", false),
+            (r"我的密码是 Hunter2xyz", true),
+            (r#""密钥速查"、config["api_key"]"#, false),
+            (
+                r"/Users/alice/Documents/notes/My Vault/00.索引/技术指南/密钥速查.md",
+                false,
+            ),
+            (
+                r#"/data/simulations/wind/20260528_sim_run/forward_run_2""#,
+                false,
+            ),
+            (r"api_key.example.com/AbCdEfGh1234567890XyZ", false),
+        ];
+
+        for (input, expect_hit) in cases {
+            let hits = find(input);
+            assert_eq!(
+                !hits.is_empty(),
+                *expect_hit,
+                "case {input:?} 命中结果 {hits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_common_key_formats() {
+        let aws = ["AKIA", "ZXCVBNMASDFGHJKL"].concat();
+        assert_eq!(find(&format!("aws_key = {aws}")), vec![aws.as_str()]);
+
+        let github = ["ghp", "_", "0123456789abcdefghijklmnopqrstuvwxyz"].concat();
+        let text = format!("token: {github}");
+        let hits = find(&text);
+        assert!(hits.contains(&github.as_str()), "{hits:?}");
+    }
+
+    #[test]
+    fn detects_context_passwords() {
+        assert_eq!(find("我的密码是 hunter2"), vec!["hunter2"]);
+    }
+
+    #[test]
+    fn ignores_paths_hashes_and_placeholders() {
+        assert!(find("open src/components/settings/PrivacySection.tsx").is_empty());
+        let sha = [
+            "9f86d081884c7d659a2feaa0c55ad015",
+            "a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        ]
+        .concat();
+        assert!(find(&format!("sha256:{sha}")).is_empty());
+        assert!(find("id=550e8400-e29b-41d4-a716-446655440000").is_empty());
+        assert!(find("api_key=REPLACE_ME").is_empty());
+    }
+
+    #[test]
+    fn ignores_code_shaped_context_values() {
+        // 上下文口令规则不能把普通代码当成口令，值形态过滤与 secret.rs 共用。
+        let cases = [
+            concat!("let api_", "key = String", "::from(\"API_", "KEY\");"),
+            concat!(
+                "max_",
+                "tokens_per_request: default_model_max_",
+                "tokens(),"
+            ),
+            concat!("type Token = ", "String", ";"),
+            concat!("secret_", "key_name = config.secret,"),
+        ];
+        for case in cases {
+            let hits = find(case);
+            assert!(hits.is_empty(), "{case:?} -> {hits:?}");
+        }
+    }
+
+    #[test]
+    fn respects_secrets_switch_only() {
+        let text = "aws_key = AKIAZXCVBNMASDFGHJKL";
+        let muted = RedactConfig {
+            enabled: true,
+            secrets: false,
+            ..Default::default()
+        };
+        assert!(GitleaksDetector.detect(text, &muted).is_empty());
+
+        // kinds 只限定个人信息类型，不影响 SECRET。
+        let limited = RedactConfig {
+            enabled: true,
+            kinds: vec![Kind::Email],
+            ..Default::default()
+        };
+        assert!(!GitleaksDetector.detect(text, &limited).is_empty());
+    }
 }

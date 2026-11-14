@@ -1,0 +1,1473 @@
+{
+  "source": "https://github.com/yetone/magpie/blob/main/internal/redact/eval_cases_test.go",
+  "license": "MIT",
+  "variables": {
+    "evalOpenAIKey": "sk-proj-Qm7vT2xLk9RbW4nZpE6sJc8YhD3fGa5uKiN1oVr0",
+    "evalGitHub": "ghp_0123456789abcdefghijABCDEFGHIJ0123",
+    "evalAWSSecret": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "evalGoogleKey": "AIzaSyB3xQ9mLk2Vr7TpW4nZs8YhC1dFgJ6uKe0oA",
+    "evalJWT": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0MjEiLCJuYW1lIjoiTWFyaWEifQ.x7Hq2LmZ9pVb4WnT8sRc1YeKd6gJ3uFa0oNi5vQwE"
+  },
+  "cases": [
+    {
+      "id": "snake-arg",
+      "from": "#3144",
+      "text": "parser.add_argument(\"--sequential_cutoff\", type=int, default=3,\n    help=\"stop after this many misses\")",
+      "mask": [],
+      "keep": [
+        {
+          "value": "sequential_cutoff",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "snake-words",
+      "from": "#3144",
+      "text": "def build_index(max_retries, warmup_steps):\n    return Index(stream_options=None, include_usage=True)",
+      "mask": [],
+      "keep": [
+        {
+          "value": "max_retries",
+          "kind": "PERSON"
+        },
+        {
+          "value": "warmup_steps",
+          "kind": "PERSON"
+        },
+        {
+          "value": "stream_options",
+          "kind": "PERSON"
+        },
+        {
+          "value": "include_usage",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "tool-servers",
+      "from": "#3143",
+      "text": "Use mcp__claude-in-chrome__navigate to open the page, then mcp__linear__save_issue to file it.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "mcp__claude-in-chrome__navigate",
+          "kind": "PERSON"
+        },
+        {
+          "value": "mcp__linear__save_issue",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "retina-file",
+      "from": "#3029",
+      "text": "Here is the screenshot: ![shot](/Users/dev/Desktop/261020_14-16-11@2x.jpg) — the button is cut off.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "261020_14-16-11@2x.jpg",
+          "kind": "EMAIL"
+        }
+      ]
+    },
+    {
+      "id": "asset-files",
+      "from": "#3029",
+      "text": "import logo from './assets/logo@3x.png';\nimport intro from './media/intro@2x.mp4';",
+      "mask": [],
+      "keep": [
+        {
+          "value": "logo@3x.png",
+          "kind": "EMAIL"
+        },
+        {
+          "value": "intro@2x.mp4",
+          "kind": "EMAIL"
+        }
+      ]
+    },
+    {
+      "id": "hex-addresses",
+      "from": "TakaNaShi_ShiKi on X",
+      "text": "## 逆向笔记\n\n| 名称 | 地址 | 备注 |\n|---|---|---|\n| 校验函数 | `0x004EA5E0` | 比较输入的注册码 |\n| 密钥表 | `0x0058C210` | 16 字节 |\n| 解密 | `0x004EB120` | XOR |",
+      "mask": [],
+      "keep": [
+        {
+          "value": "0x004EA5E0",
+          "kind": "SECRET"
+        },
+        {
+          "value": "0x0058C210",
+          "kind": "SECRET"
+        },
+        {
+          "value": "0x004EB120",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "hex-addresses-en",
+      "from": "TakaNaShi_ShiKi on X",
+      "text": "The license check is at `0x004EA5E0`; the key table at `0x0058C210`.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "0x004EA5E0",
+          "kind": "ACCOUNT"
+        },
+        {
+          "value": "0x0058C210",
+          "kind": "ACCOUNT"
+        }
+      ]
+    },
+    {
+      "id": "url-userinfo",
+      "from": "#3538",
+      "text": "DATABASE_URL=postgres://app:hunter2pass@db.acme-corp.cn:5432/orders",
+      "mask": [
+        {
+          "value": "hunter2pass",
+          "kind": "SECRET"
+        }
+      ],
+      "keep": [
+        {
+          "value": "db.acme-corp.cn",
+          "kind": "EMAIL"
+        }
+      ]
+    },
+    {
+      "id": "git-user-url",
+      "from": "#3538",
+      "text": "git clone https://git@gitlab.acme-corp.cn/team/repo.git && cd repo",
+      "mask": [],
+      "keep": [
+        {
+          "value": "git@gitlab.acme-corp.cn",
+          "kind": "EMAIL"
+        }
+      ]
+    },
+    {
+      "id": "unix-time",
+      "from": "#3577",
+      "text": "{\"type\":\"tool_call\",\"id\":\"call_7\",\"ts\":1761379200,\"name\":\"read_file\",\"args\":{\"path\":\"main.go\"}}",
+      "mask": [],
+      "keep": [
+        {
+          "value": "1761379200",
+          "kind": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "unix-time-ms",
+      "from": "#3577",
+      "text": "tool_call finished at 1761379200123 (took 812 ms)",
+      "mask": [],
+      "keep": [
+        {
+          "value": "1761379200123",
+          "kind": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "session-uuid",
+      "from": "d3db461bb",
+      "text": "Read ~/.claude/projects/-Users-dev-app/3f2b6c1e-8a4d-4f7e-9b1a-2c3d4e5f6a7b.jsonl for the transcript.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "3f2b6c1e-8a4d-4f7e-9b1a-2c3d4e5f6a7b",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "digests",
+      "from": "d3db461bb",
+      "text": "sha256: 80efc1803eda7c095a79741d2008c07e2e0a57b01bac8825fbeb448fd097998c\ncommit b855cfee9a1c3d4e5f60718293a4b5c6d7e8f901",
+      "mask": [],
+      "keep": [
+        {
+          "value": "80efc1803eda7c095a79741d2008c07e2e0a57b01bac8825fbeb448fd097998c",
+          "kind": "SECRET"
+        },
+        {
+          "value": "b855cfee9a1c3d4e5f60718293a4b5c6d7e8f901",
+          "kind": "ACCOUNT"
+        }
+      ]
+    },
+    {
+      "id": "tool-ids",
+      "from": "611b9e173",
+      "text": "{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01XkP9qLm2VbT7wZ4nR8sYc3\",\"content\":\"ok\"} request req_011CUq7vHn3kLp9WmT2xZb4R",
+      "mask": [],
+      "keep": [
+        {
+          "value": "toolu_01XkP9qLm2VbT7wZ4nR8sYc3",
+          "kind": "SECRET"
+        },
+        {
+          "value": "req_011CUq7vHn3kLp9WmT2xZb4R",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "token-count",
+      "from": "611b9e173",
+      "text": "<system-reminder><total_tokens>14902266 tokens left</total_tokens></system-reminder>",
+      "mask": [],
+      "keep": [
+        {
+          "value": "14902266",
+          "kind": "ACCOUNT"
+        }
+      ]
+    },
+    {
+      "id": "assistant-names",
+      "from": "611b9e173",
+      "text": "You are Claude, powered by Opus 5.5. Codex and Haiku 4.5 may also answer in this session.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Claude",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Opus 5.5",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Codex",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Haiku 4.5",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "home-path",
+      "from": "611b9e173",
+      "text": "cd /Users/jdoe/workspace/projects/magpie && go test ./internal/redact",
+      "mask": [],
+      "keep": [
+        {
+          "value": "jdoe",
+          "kind": "PERSON"
+        },
+        {
+          "value": "magpie",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "grep-pattern",
+      "from": "611b9e173",
+      "text": "rg -n 'password|passwd|secret_key|api_token' --glob '*.go'",
+      "mask": [],
+      "keep": [
+        {
+          "value": "password|passwd|secret_key|api_token",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "sizes-versions",
+      "from": "611b9e173",
+      "text": "Screenshot 1624x1487 at 2x; magpie v0.1.1513 built with go1.26.8 on darwin/arm64.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "1624x1487",
+          "kind": "PHONE"
+        },
+        {
+          "value": "v0.1.1513",
+          "kind": "ACCOUNT"
+        },
+        {
+          "value": "1.26.8",
+          "kind": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "noreply",
+      "from": "true",
+      "text": "Author: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+      "mask": [],
+      "keep": [
+        {
+          "value": "49699333+dependabot[bot]@users.noreply.github.com",
+          "kind": "EMAIL"
+        }
+      ]
+    },
+    {
+      "id": "example-mail",
+      "from": "true",
+      "text": "// e.g. send(\"user@example.com\", subject)",
+      "mask": [],
+      "keep": [
+        {
+          "value": "user@example.com",
+          "kind": "EMAIL"
+        }
+      ]
+    },
+    {
+      "id": "code-locations",
+      "from": "true",
+      "text": "internal/redact/model.go:212:9: undefined: epochNumber (pid 48213, exit status 2)",
+      "mask": [],
+      "keep": [
+        {
+          "value": "48213",
+          "kind": "PHONE"
+        },
+        {
+          "value": "model.go:212",
+          "kind": "ACCOUNT"
+        }
+      ]
+    },
+    {
+      "id": "colors-ports",
+      "from": "true",
+      "text": ".btn { color: #1a2b3c; } server listening on 127.0.0.1:3425, retry in 30000ms",
+      "mask": [],
+      "keep": [
+        {
+          "value": "#1a2b3c",
+          "kind": "SECRET"
+        },
+        {
+          "value": "30000",
+          "kind": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "zh-words",
+      "from": "#1977",
+      "text": "请帮我把这个函数改成异步的，并且加上错误处理和单元测试。",
+      "mask": [],
+      "keep": [
+        {
+          "value": "函数",
+          "kind": "PERSON"
+        },
+        {
+          "value": "错误处理",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "ci-table",
+      "from": "611b9e173",
+      "text": "| run | file | result |\n| 6123456789 | ci.yml | success |",
+      "mask": [],
+      "keep": [
+        {
+          "value": "6123456789",
+          "kind": "ACCOUNT"
+        },
+        {
+          "value": "ci.yml",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "git-log",
+      "from": "d3db461bb",
+      "text": "ba319a758 gateway: the lone tool_choice none goes to the Grok plugin only (#3110)\nUpdate to v0.1.1442 now",
+      "mask": [],
+      "keep": [
+        {
+          "value": "ba319a758",
+          "kind": "ACCOUNT"
+        },
+        {
+          "value": "v0.1.1442",
+          "kind": "ACCOUNT"
+        }
+      ]
+    },
+    {
+      "id": "pixels",
+      "from": "d3db461bb",
+      "text": "Attached a screenshot of 1624x1487 pixels, 2048000 bytes.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "1624x1487",
+          "kind": "ACCOUNT"
+        },
+        {
+          "value": "2048000",
+          "kind": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "assistant-prose",
+      "from": "d3db461bb",
+      "text": "Thanks Claude, that fixed it. Also ask Gemini later. — Sam Lee\nHi Codex, please review. Opus said it looks good, Sonnet disagreed.",
+      "mask": [
+        {
+          "value": "Sam Lee",
+          "kind": "PERSON"
+        }
+      ],
+      "keep": [
+        {
+          "value": "Claude",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Codex",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Opus",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Sonnet",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "commit-login",
+      "from": "d3db461bb",
+      "text": "commit 919585d1700e515ac38da49e31bc60a527fc15c2\nAuthor: yetone <yetone@users.noreply.github.com>",
+      "mask": [],
+      "keep": [
+        {
+          "value": "yetone",
+          "kind": "PERSON"
+        },
+        {
+          "value": "919585d1700e515ac38da49e31bc60a527fc15c2",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "session-tokens",
+      "from": "d3db461bb",
+      "text": "session 019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b token 019a2b3c4d5e7f608a9b0c1d2e3f4a5b",
+      "mask": [],
+      "keep": [
+        {
+          "value": "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "user-path",
+      "from": "d3db461bb",
+      "text": "read /Users/yetone/workspace/projects/magpie/AGENTS.md and C:\\Users\\vdxz\\notes.txt, then /home/rina/.config/app.toml",
+      "mask": [],
+      "keep": [
+        {
+          "value": "yetone",
+          "kind": "PERSON"
+        },
+        {
+          "value": "AGENTS.md",
+          "kind": "PERSON"
+        },
+        {
+          "value": "vdxz",
+          "kind": "PERSON"
+        },
+        {
+          "value": "rina",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "skill-list",
+      "from": "d3db461bb",
+      "text": "- artifact-design: Design guidance\n- workflow-authoring: Reference for writing scripts\nUser yetone logged in; local LLM ready\nReviewer: Approved",
+      "mask": [],
+      "keep": [
+        {
+          "value": "artifact-design",
+          "kind": "PERSON"
+        },
+        {
+          "value": "workflow-authoring",
+          "kind": "PERSON"
+        },
+        {
+          "value": "yetone",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Reviewer: Approved",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "one-letter",
+      "from": "true",
+      "text": "J said the build is fine; K and Q disagreed.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "J",
+          "kind": "PERSON"
+        },
+        {
+          "value": "K",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "tool-use-ids",
+      "from": "d3db461bb",
+      "text": "{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01XyZabcDEF123456\",\"id\":\"srvtoolu_01AbCdEfGhIjKlMnOp\",\"call\":\"call_Qm7vT2xLk9RbW4nZ\"}",
+      "mask": [],
+      "keep": [
+        {
+          "value": "toolu_01XyZabcDEF123456",
+          "kind": "SECRET"
+        },
+        {
+          "value": "srvtoolu_01AbCdEfGhIjKlMnOp",
+          "kind": "SECRET"
+        },
+        {
+          "value": "call_Qm7vT2xLk9RbW4nZ",
+          "kind": "ACCOUNT"
+        }
+      ]
+    },
+    {
+      "id": "task-ids",
+      "from": "d3db461bb",
+      "text": "<task-id>a97c9bc67cc1f1e27</task-id> wrote 31a4f944-e7cf-4f6f-acc7-eef50d9911dd.jsonl",
+      "mask": [],
+      "keep": [
+        {
+          "value": "a97c9bc67cc1f1e27",
+          "kind": "SECRET"
+        },
+        {
+          "value": "31a4f944-e7cf-4f6f-acc7-eef50d9911dd",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "hex-lines",
+      "from": "d3db461bb",
+      "text": "hex40 ok? 1 2f1d0c9b8a7e6f5d4c3b2a1908f7e6d5c4b3a291\n919585d1700e515ac38da49e31bc60a527fc15c2 ok? 1",
+      "mask": [],
+      "keep": [
+        {
+          "value": "2f1d0c9b8a7e6f5d4c3b2a1908f7e6d5c4b3a291",
+          "kind": "SECRET",
+          "known": "#3597"
+        },
+        {
+          "value": "919585d1700e515ac38da49e31bc60a527fc15c2",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "go-caches",
+      "from": "d3db461bb",
+      "text": "open /Users/x/Library/Caches/go-build/63700b7ab65fd1d3@v63: no such file\nP=/Users/yetone/.npm/_npx/1e7f6d9597241db0 d6426ecaaf0a28de@v31",
+      "mask": [],
+      "keep": [
+        {
+          "value": "63700b7ab65fd1d3@v63",
+          "kind": "EMAIL"
+        },
+        {
+          "value": "d6426ecaaf0a28de@v31",
+          "kind": "EMAIL"
+        },
+        {
+          "value": "1e7f6d9597241db0",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "base64-image",
+      "from": "d3db461bb",
+      "text": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA+k5zM7Md7tM9ehxd51xF/isvM9",
+      "mask": [],
+      "keep": [
+        {
+          "value": "k5zM7Md7tM9ehxd51xF",
+          "kind": "SECRET"
+        },
+        {
+          "value": "isvM9",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "grep-alts",
+      "from": "d3db461bb",
+      "text": "rg 'modelTakes|modelFits|personFits' internal; join at discord.gg/Ab3dEf9h today",
+      "mask": [],
+      "keep": [
+        {
+          "value": "modelTakes|modelFits|personFits",
+          "kind": "SECRET"
+        },
+        {
+          "value": "discord.gg/Ab3dEf9h",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "json-settings",
+      "from": "d3db461bb",
+      "text": "settings: {\"mode\": \"fast\", \"retries\": \"3\", \"theme\": \"dark\"}",
+      "mask": [],
+      "keep": [
+        {
+          "value": "\"mode\": \"fast\"",
+          "kind": "SECRET"
+        },
+        {
+          "value": "\"retries\": \"3\"",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "event-times",
+      "from": "#3577",
+      "text": "{\"event\": \"tool_call\", \"timestamp\": 1792903687, \"ms\": 1792903687123, \"at\": \"2026-10-25T04:48:03.755Z\", \"desk\": \"+1 415 555 0132\", \"ext\": \"4821\"}",
+      "mask": [
+        {
+          "value": "415 555 0132",
+          "kind": "PHONE"
+        }
+      ],
+      "keep": [
+        {
+          "value": "1792903687",
+          "kind": "PHONE"
+        },
+        {
+          "value": "4821",
+          "kind": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "codex-meta",
+      "from": "#3144",
+      "text": "{\"stream_options\":{\"reasoning_summary_delivery\":\"sequential_cutoff\"},\"session_id\":\"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b\",\"text\":\"set sequential_cutoff for Rina Kowalczyk, skill at /Users/vdxz/.codex/skills/wrangler/SKILL.md, my password is Tr0ub4dor&3xq\"}",
+      "mask": [
+        {
+          "value": "Rina Kowalczyk",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Tr0ub4dor&3xq",
+          "kind": "SECRET"
+        }
+      ],
+      "keep": [
+        {
+          "value": "sequential_cutoff",
+          "kind": "PERSON"
+        },
+        {
+          "value": "reasoning_summary_delivery",
+          "kind": "PERSON"
+        },
+        {
+          "value": "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b",
+          "kind": "SECRET"
+        },
+        {
+          "value": "vdxz",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "short-values",
+      "from": "true",
+      "text": "office: Unit 5, postcode 94107",
+      "mask": [],
+      "keep": [
+        {
+          "value": "94107",
+          "kind": "ADDRESS"
+        }
+      ]
+    },
+    {
+      "id": "url-login",
+      "from": "#3538",
+      "text": "git clone https://deploy-bot@git.acme-corp.cn/team/app.git and ssh ops@10.0.0.7",
+      "mask": [],
+      "keep": [
+        {
+          "value": "deploy-bot@git.acme-corp.cn",
+          "kind": "EMAIL"
+        }
+      ]
+    },
+    {
+      "id": "zh-names-edge",
+      "from": "true",
+      "text": "这个问题请找王小明先生处理，抄送给李华老师。",
+      "mask": [
+        {
+          "value": "王小明",
+          "kind": "PERSON"
+        },
+        {
+          "value": "李华",
+          "kind": "PERSON"
+        }
+      ],
+      "keep": [
+        {
+          "value": "先生",
+          "kind": "PERSON"
+        },
+        {
+          "value": "老师",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "metric-decimals",
+      "from": "x-tearicerice",
+      "text": "2026-10-21T08:10:00Z 2984.517203648091\n2026-10-21T08:20:00Z 1.0833333333333333\n2026-10-21T08:30:00Z 101.47368421052631",
+      "mask": [],
+      "keep": [
+        {
+          "value": "2984.517203648091",
+          "kind": "PHONE"
+        },
+        {
+          "value": "1.0833333333333333",
+          "kind": "PHONE"
+        },
+        {
+          "value": "101.47368421052631",
+          "kind": "PHONE"
+        }
+      ]
+    },
+    {
+      "id": "run-ids",
+      "from": "x-tearicerice",
+      "text": "Someone ran Deploy by hand ([run 48213097715](https://github.com/acme/web/actions/runs/48213097715)).\n$ env -u GH_TOKEN -u GITHUB_TOKEN gh run view 48213097716 --log | tail\n15:17:29Z fleet run 48213097716",
+      "mask": [],
+      "keep": [
+        {
+          "value": "run 48213097715",
+          "kind": "PHONE"
+        },
+        {
+          "value": "48213097716",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "background-tasks",
+      "from": "x-tearicerice",
+      "text": "Command running in background with ID: kq3m8zx2t. Output is being written to: /private/tmp/claude-501/tasks/kq3m8zx2t.output\nThe command ran past its timeout and was moved to the background (ID: bv7n2wq5p).\n<task-notification>\n<task-id>kq3m8zx2t</task-id>",
+      "mask": [],
+      "keep": [
+        {
+          "value": "kq3m8zx2t",
+          "kind": "SECRET"
+        },
+        {
+          "value": "bv7n2wq5p",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "model-names",
+      "from": "x-tearicerice",
+      "text": "{'api_provider': 'openai', 'status': '404', 'litellm_model_name': 'qwen/qwen3-30b-a3b-instruct-2507'} 2.1\n{'api_provider': 'None', 'litellm_model_name': 'qwen/qwen3-vl-32b-instruct'} 1.0\n$ grep -n 'qwen3-max\\b\\|qwen/qwen3-14b' usage.log",
+      "mask": [],
+      "keep": [
+        {
+          "value": "qwen/qwen3-30b-a3b-instruct-2507",
+          "kind": "SECRET"
+        },
+        {
+          "value": "qwen/qwen3-vl-32b-instruct",
+          "kind": "SECRET"
+        },
+        {
+          "value": "qwen3-max\\b\\|qwen/qwen3-14b",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "ls-files",
+      "from": "x-tearicerice",
+      "text": "-rwxr-xr-x@  1 sam  staff   690 Aug 20 19:58 make-icons.sh\n-rw-r--r--@  1 sam  staff  1204 Aug 21 09:02 notes-old.md",
+      "mask": [],
+      "keep": [
+        {
+          "value": "make-icons.sh",
+          "kind": "SECRET"
+        },
+        {
+          "value": "notes-old.md",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "gateway-ids",
+      "from": "x-tearicerice",
+      "text": "{\"stream\":true,\"gatewayRequestId\":\"req_gateway_7c41e09a5bd2f3687e1a90c4\",\"ledgerId\":\"gl_Wq7rTb2xNe5YpLaZ\"}\n- tb_Ra4Kp9Lm-ZqT2wXy_8Hs, $1.61: release about 17:05Z",
+      "mask": [],
+      "keep": [
+        {
+          "value": "req_gateway_7c41e09a5bd2f3687e1a90c4",
+          "kind": "SECRET"
+        },
+        {
+          "value": "gl_Wq7rTb2xNe5YpLaZ",
+          "kind": "SECRET"
+        },
+        {
+          "value": "tb_Ra4Kp9Lm-ZqT2wXy_8Hs",
+          "kind": "SECRET"
+        },
+        {
+          "value": "release about 17:05Z",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "transcript-path",
+      "from": "x-tearicerice",
+      "text": "read the full transcript at: /Users/sam/.claude/projects/-Users-sam-work-acme-web/5c0d2e1f-7a4b-4c3d-9e8f-0a1b2c3d4e5f.jsonl\nContinue the conversation",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Users-sam-work-acme-web/5c0d2e1f-7a4b-4c3d-9e8f-0a1b2c3d4e5f.jsonl",
+          "kind": "ADDRESS"
+        }
+      ]
+    },
+    {
+      "id": "pr-checks",
+      "from": "x-tearicerice",
+      "text": "CodeRabbit\tpending\t0\t\tReview in progress\nGreptile Review\tpending\t0\thttps://app.greptile.com/review/3860\nCI\tpass\t4m12s\n{\"region\":\"us-east-1\",\"edge\":\"eu.stg.acme.io\",\"monitored\":false}",
+      "mask": [],
+      "keep": [
+        {
+          "value": "CodeRabbit",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Greptile",
+          "kind": "PERSON"
+        },
+        {
+          "value": "CI",
+          "kind": "PERSON"
+        },
+        {
+          "value": "eu.stg.acme.io",
+          "kind": "EMAIL"
+        }
+      ]
+    },
+    {
+      "id": "team-notes",
+      "from": "x-tearicerice",
+      "text": "The 14:55Z errors came from our own org; Dana Whitfield is the lead if this turns out to be a settlement failure, and Priya wants it fixed first.",
+      "mask": [
+        {
+          "value": "Dana Whitfield",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Priya",
+          "kind": "PERSON"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "settings-model",
+      "from": "owner",
+      "text": "[providers]\ngroqAPIKey = \"gsk_x…\"\ngroqAPIModel = \"llama3-70b-8192\"\nclaudeAPIURL = \"https://api.anthropic.com\"\nclaudeAPIModel = \"claude-3-5-sonnet-20241022\"",
+      "mask": [],
+      "keep": [
+        {
+          "value": "llama3-70b-8192",
+          "kind": "SECRET"
+        },
+        {
+          "value": "claude-3-5-sonnet-20241022",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "rust-toolchain",
+      "from": "owner",
+      "text": "- MSRV check. The repo's minimum rust-version is 1.78. Pinning to `nightly-2026-09-01` (about 7 weeks old) is plausible.\n- Risk: the pinned toolchain lacks fixes.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "nightly-2026-09-01",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-names",
+      "from": "ylorn.",
+      "text": "Cicada, Mimi, Phosphor, Parakeet, Muesli",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Cicada",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Mimi",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Phosphor",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Parakeet",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Muesli",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-alone",
+      "from": "ylorn.",
+      "text": "Muesli",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Muesli",
+          "kind": "PERSON",
+          "known": "#5506"
+        }
+      ]
+    },
+    {
+      "id": "app-markdown",
+      "from": "ylorn.",
+      "text": "1. **Cicada** – a minimal note-taking app with Markdown.\n2. **Mimi** – a voice memo app with AI summaries.\n3. **Phosphor** – an RSS reader.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Cicada",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Mimi",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Phosphor",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-compare",
+      "from": "ylorn.",
+      "text": "Compare Cicada and Mimi for note-taking on macOS. Which one syncs better with iCloud?",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Cicada",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Mimi",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-vs",
+      "from": "ylorn.",
+      "text": "Phosphor vs Parakeet: which is the better dictation app?",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Phosphor",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Parakeet",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-list",
+      "from": "ylorn.",
+      "text": "I'm choosing a transcription app. So far: Muesli, Parakeet and Mimi. Muesli is free, Parakeet has a one-time price, Mimi is a subscription.",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Muesli",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Parakeet",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Mimi",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-using",
+      "from": "ylorn.",
+      "text": "I've been using Phosphor for a week, and yesterday I switched to Muesli. Is Cicada worth trying too?",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Phosphor",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Muesli",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Cicada",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-zh",
+      "from": "ylorn.",
+      "text": "帮我对比一下 Cicada 和 Mimi 这两个 app，哪个更适合记笔记？Phosphor 和 Parakeet 呢？",
+      "mask": [],
+      "keep": [
+        {
+          "value": "Cicada",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Mimi",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Phosphor",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Parakeet",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-and-person",
+      "from": "ylorn.",
+      "text": "My colleague Mimi said the Phosphor app is great; she uses it every day.",
+      "mask": [
+        {
+          "value": "Mimi",
+          "kind": "PERSON"
+        }
+      ],
+      "keep": [
+        {
+          "value": "Phosphor",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-and-full-name",
+      "from": "ylorn.",
+      "text": "John Smith asked me to install Cicada on his Mac.",
+      "mask": [
+        {
+          "value": "John Smith",
+          "kind": "PERSON"
+        }
+      ],
+      "keep": [
+        {
+          "value": "Cicada",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "app-and-zh-name",
+      "from": "ylorn.",
+      "text": "张伟说 Parakeet 这个软件很好用，让我也装一个。",
+      "mask": [
+        {
+          "value": "张伟",
+          "kind": "PERSON"
+        }
+      ],
+      "keep": [
+        {
+          "value": "Parakeet",
+          "kind": "PERSON"
+        }
+      ]
+    },
+    {
+      "id": "prose-person",
+      "from": "true",
+      "text": "Please email Maria Gonzalez about the overdue invoice before Friday.",
+      "mask": [
+        {
+          "value": "Maria Gonzalez",
+          "kind": "PERSON"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "git-author",
+      "from": "true",
+      "text": "commit 4f1c2d9\nAuthor: Jane Smith <jane.smith@gmail.com>\nDate:   Tue Oct 21 09:14:03 2026 +0800",
+      "mask": [
+        {
+          "value": "Jane Smith",
+          "kind": "PERSON"
+        },
+        {
+          "value": "jane.smith@gmail.com",
+          "kind": "EMAIL"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "json-contact",
+      "from": "true",
+      "text": "{\"customer\":{\"name\":\"Wei Zhang\",\"email\":\"wei.zhang@outlook.com\",\"phone\":\"+86 139 1234 5678\"}}",
+      "mask": [
+        {
+          "value": "Wei Zhang",
+          "kind": "PERSON"
+        },
+        {
+          "value": "wei.zhang@outlook.com",
+          "kind": "EMAIL"
+        },
+        {
+          "value": "139 1234 5678",
+          "kind": "PHONE"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "us-address",
+      "from": "true",
+      "text": "Ship the replacement to 742 Evergreen Terrace, Springfield, OR 97477 and call (212) 555-0199 on arrival.",
+      "mask": [
+        {
+          "value": "742 Evergreen Terrace",
+          "kind": "ADDRESS"
+        },
+        {
+          "value": "555-0199",
+          "kind": "PHONE"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "zh-contact",
+      "from": "#1977",
+      "text": "联系人：张伟，电话 13800138000，地址：北京市朝阳区建国路88号院3号楼",
+      "mask": [
+        {
+          "value": "张伟",
+          "kind": "PERSON"
+        },
+        {
+          "value": "13800138000",
+          "kind": "PHONE"
+        },
+        {
+          "value": "建国路88号",
+          "kind": "ADDRESS"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "zh-prose",
+      "from": "#1977",
+      "text": "王芳下周一去上海出差，酒店那边请联系她的助理刘洋。",
+      "mask": [
+        {
+          "value": "王芳",
+          "kind": "PERSON"
+        },
+        {
+          "value": "刘洋",
+          "kind": "PERSON",
+          "known": "#3592"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "log-user",
+      "from": "true",
+      "text": "2026-10-21T09:14:03Z INFO login ok user=li.na@qq.com tenant=acme ip=10.2.3.4",
+      "mask": [
+        {
+          "value": "li.na@qq.com",
+          "kind": "EMAIL"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "phone-intl",
+      "from": "true",
+      "text": "If the build breaks overnight, page Tom on +1 415-555-0132.",
+      "mask": [
+        {
+          "value": "415-555-0132",
+          "kind": "PHONE"
+        },
+        {
+          "value": "Tom",
+          "kind": "PERSON"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "greeting",
+      "from": "true",
+      "text": "Hi Mimi, thanks for the notes from Tuesday's call. Can you send them to Laura as well?",
+      "mask": [
+        {
+          "value": "Mimi",
+          "kind": "PERSON"
+        },
+        {
+          "value": "Laura",
+          "kind": "PERSON"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "card",
+      "from": "true",
+      "text": "The customer's card number is 4111 1111 1111 1111, expiry 12/29.",
+      "mask": [
+        {
+          "value": "4111 1111 1111 1111",
+          "kind": "ACCOUNT"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "iban",
+      "from": "true",
+      "text": "Wire the refund to IBAN DE89 3704 0044 0532 0130 00 (Commerzbank).",
+      "mask": [
+        {
+          "value": "DE89 3704 0044 0532 0130 00",
+          "kind": "ACCOUNT"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "zh-id",
+      "from": "true",
+      "text": "身份证号 11010519491231002X，开户行 招商银行",
+      "mask": [
+        {
+          "value": "11010519491231002X",
+          "kind": "ACCOUNT"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "env-file",
+      "from": "true",
+      "text": "OPENAI_API_KEY=sk-proj-Qm7vT2xLk9RbW4nZpE6sJc8YhD3fGa5uKiN1oVr0\nDB_PASSWORD=Tr0ub4dor&3xyz\nDEBUG=true",
+      "mask": [
+        {
+          "value": "sk-proj-Qm7vT2xLk9RbW4nZpE6sJc8YhD3fGa5uKiN1oVr0",
+          "kind": "SECRET"
+        },
+        {
+          "value": "Tr0ub4dor&3xyz",
+          "kind": "SECRET"
+        }
+      ],
+      "keep": [
+        {
+          "value": "DEBUG=true",
+          "kind": "SECRET"
+        }
+      ]
+    },
+    {
+      "id": "prose-password",
+      "from": "true",
+      "text": "the staging db password is hunter2Xq9z, don't commit it",
+      "mask": [
+        {
+          "value": "hunter2Xq9z",
+          "kind": "SECRET"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "zh-password",
+      "from": "true",
+      "text": "服务器密码是 Qw8!zLp3mN，用完记得改掉",
+      "mask": [
+        {
+          "value": "Qw8!zLp3mN",
+          "kind": "SECRET"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "bearer",
+      "from": "true",
+      "text": "curl -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0MjEiLCJuYW1lIjoiTWFyaWEifQ.x7Hq2LmZ9pVb4WnT8sRc1YeKd6gJ3uFa0oNi5vQwE' https://api.acme-corp.cn/v1/me",
+      "mask": [
+        {
+          "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0MjEiLCJuYW1lIjoiTWFyaWEifQ.x7Hq2LmZ9pVb4WnT8sRc1YeKd6gJ3uFa0oNi5vQwE",
+          "kind": "SECRET"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "code-keys",
+      "from": "true",
+      "text": "const gh = \"ghp_0123456789abcdefghijABCDEFGHIJ0123\";\nconst maps = 'AIzaSyB3xQ9mLk2Vr7TpW4nZs8YhC1dFgJ6uKe0oA';\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "mask": [
+        {
+          "value": "ghp_0123456789abcdefghijABCDEFGHIJ0123",
+          "kind": "SECRET"
+        },
+        {
+          "value": "AIzaSyB3xQ9mLk2Vr7TpW4nZs8YhC1dFgJ6uKe0oA",
+          "kind": "SECRET"
+        },
+        {
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+          "kind": "SECRET"
+        }
+      ],
+      "keep": []
+    },
+    {
+      "id": "tool-result-mixed",
+      "from": "true",
+      "text": "$ cat contacts.csv\nname,email,phone\nRina Kobayashi,rina.k@fastmail.com,+81 90-1234-5678\nOmar Haddad,omar.haddad@proton.me,+44 7700 900123",
+      "mask": [
+        {
+          "value": "Rina Kobayashi",
+          "kind": "PERSON"
+        },
+        {
+          "value": "rina.k@fastmail.com",
+          "kind": "EMAIL"
+        },
+        {
+          "value": "90-1234-5678",
+          "kind": "PHONE",
+          "guardknown": "#3776"
+        },
+        {
+          "value": "Omar Haddad",
+          "kind": "PERSON"
+        },
+        {
+          "value": "omar.haddad@proton.me",
+          "kind": "EMAIL"
+        },
+        {
+          "value": "7700 900123",
+          "kind": "PHONE"
+        }
+      ],
+      "keep": [
+        {
+          "value": "contacts.csv",
+          "kind": "EMAIL"
+        }
+      ]
+    }
+  ],
+  "upstream_commit": "03a800ac698445234c2a996bf0298fd6677d3ba0",
+  "retrieved_at": "2026-11-10"
+}
