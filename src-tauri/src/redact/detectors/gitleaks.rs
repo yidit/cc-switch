@@ -4,6 +4,7 @@
 //! （`proxy/privacy_filter/secrets.rs`，源自 packyme/privacy-filter，MIT）。
 
 use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
+use aho_corasick::{AhoCorasick, MatchKind};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
@@ -271,6 +272,115 @@ pub(super) struct SecretRules {
     rules: Vec<SecretRule>,
     /// 因正则语法不兼容被跳过的规则数
     skipped: usize,
+    /// 关键词预筛：所有规则的关键词共用一个自动机，一遍扫描得出哪些规则需要跑正则
+    gate: KeywordGate,
+}
+
+/// 关键词预筛，语义与「`text.to_lowercase()` 后逐条 `contains(keyword)`」完全一致。
+///
+/// aho-corasick 的 `ascii_case_insensitive` 只忽略 ASCII 大小写，而 `to_lowercase` 还会把
+/// 开尔文符号 `K`（U+212A）变成 `k`、把 `İ` 变成 `i̇` 等。所以纯 ASCII 文本直接在原文上扫，
+/// 含非 ASCII 的文本仍先整体 `to_lowercase()` 再扫，两条路径都与旧实现等价。
+struct KeywordGate {
+    /// 由全部规则的关键词（小写、去重）构建的自动机；构建失败时为 None，退回逐条 contains
+    automaton: Option<AhoCorasick>,
+    /// 自动机里第 i 个关键词 → 带这个关键词的规则下标
+    keyword_rules: Vec<Vec<usize>>,
+    /// 没有关键词（或含空关键词）的规则，始终参与
+    always_active: Vec<usize>,
+}
+
+impl KeywordGate {
+    fn build(rules: &[SecretRule]) -> Self {
+        let mut keywords: Vec<String> = Vec::new();
+        let mut keyword_rules: Vec<Vec<usize>> = Vec::new();
+        let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut always_active = Vec::new();
+        for (rule_idx, rule) in rules.iter().enumerate() {
+            // 旧实现：keywords 为空 → 总是参与；`low.contains("")` 恒为真 → 同样总是参与
+            if rule.keywords.is_empty() || rule.keywords.iter().any(String::is_empty) {
+                always_active.push(rule_idx);
+                continue;
+            }
+            for keyword in &rule.keywords {
+                let id = *index.entry(keyword.as_str()).or_insert_with(|| {
+                    keywords.push(keyword.clone());
+                    keyword_rules.push(Vec::new());
+                    keywords.len() - 1
+                });
+                if keyword_rules[id].last() != Some(&rule_idx) {
+                    keyword_rules[id].push(rule_idx);
+                }
+            }
+        }
+        let automaton = if keywords.is_empty() {
+            None
+        } else {
+            match AhoCorasick::builder()
+                .match_kind(MatchKind::Standard)
+                .ascii_case_insensitive(true)
+                .build(&keywords)
+            {
+                Ok(ac) => Some(ac),
+                Err(e) => {
+                    log::warn!("[redact] 关键词自动机构建失败，退回逐条匹配: {e}");
+                    None
+                }
+            }
+        };
+        Self {
+            automaton,
+            keyword_rules,
+            always_active,
+        }
+    }
+
+    /// 返回每条规则是否需要跑正则。
+    fn active_rules(&self, rules: &[SecretRule], text: &str) -> Vec<bool> {
+        /// 标记规则为活跃，返回是否所有规则都已活跃。
+        fn mark(active: &mut [bool], remaining: &mut usize, i: usize) -> bool {
+            if !active[i] {
+                active[i] = true;
+                *remaining -= 1;
+            }
+            *remaining == 0
+        }
+
+        let mut active = vec![false; rules.len()];
+        let mut remaining = rules.len();
+        for &i in &self.always_active {
+            mark(&mut active, &mut remaining, i);
+        }
+        if remaining == 0 {
+            return active;
+        }
+        let Some(ac) = &self.automaton else {
+            // 自动机不可用：原样执行旧逻辑
+            let low = text.to_lowercase();
+            for (i, rule) in rules.iter().enumerate() {
+                if rule.keywords.iter().any(|k| low.contains(k.as_str())) {
+                    mark(&mut active, &mut remaining, i);
+                }
+            }
+            return active;
+        };
+        let lowered;
+        let haystack = if text.is_ascii() {
+            text
+        } else {
+            lowered = text.to_lowercase();
+            lowered.as_str()
+        };
+        // Standard 语义下 overlapping 迭代报告每一处出现，互相包含的关键词也不会漏
+        'scan: for m in ac.find_overlapping_iter(haystack) {
+            for &i in &self.keyword_rules[m.pattern().as_usize()] {
+                if mark(&mut active, &mut remaining, i) {
+                    break 'scan;
+                }
+            }
+        }
+        active
+    }
 }
 
 /// gitleaks.toml 的文本检测配置；不使用文件路径等扫描器专用字段。
@@ -312,6 +422,7 @@ impl SecretRules {
         let mut sd = Self {
             rules: Vec::new(),
             skipped: 0,
+            gate: KeywordGate::build(&[]),
         };
         match toml::from_str::<TomlConfig>(toml_text) {
             Ok(cfg) => {
@@ -347,6 +458,8 @@ impl SecretRules {
         if sd.rules.is_empty() {
             sd.load_builtin();
         }
+        // 规则集确定后再建自动机；关键词取自各规则已小写化的列表。
+        sd.gate = KeywordGate::build(&sd.rules);
         sd
     }
 
@@ -386,7 +499,6 @@ impl SecretRules {
 
     fn detect(&self, text: &str) -> Vec<Hit> {
         let mut spans = Vec::new();
-        let low = text.to_lowercase();
         let push = |spans: &mut Vec<Hit>, start, end| {
             spans.push(Hit {
                 start,
@@ -396,9 +508,11 @@ impl SecretRules {
             })
         };
 
-        // Route 1: gitleaks 规则，关键词预筛 —— 只对命中关键词的规则跑正则
-        for r in &self.rules {
-            if !r.keywords.is_empty() && !r.keywords.iter().any(|k| low.contains(k.as_str())) {
+        // Route 1: gitleaks 规则，关键词预筛 —— 只对命中关键词的规则跑正则。
+        // 关键词用单个自动机一遍扫描，避免逐条 contains 导致的重复全文扫描。
+        let active = self.gate.active_rules(&self.rules, text);
+        for (index, r) in self.rules.iter().enumerate() {
+            if !active[index] {
                 continue;
             }
             for caps in r.re.captures_iter(text) {
@@ -664,6 +778,37 @@ mod tests {
             .into_iter()
             .map(|hit| &text[hit.start..hit.end])
             .collect()
+    }
+
+    #[test]
+    fn keyword_gate_matches_the_naive_prefilter() {
+        // 自动机预筛必须与「整体小写后逐条 contains」完全一致：
+        // 覆盖大小写混排、无命中、以及会走非 ASCII 小写路径的文本。
+        let rules = &*RULES;
+        let samples = [
+            "plain code without any credential",
+            "Authorization: Bearer abcDEF1234567890",
+            "my PASSWORD is Hunter2xyz",
+            "Kubernetes Secret Token",
+            "开尔文符号 K 与 İstanbul 会让 to_lowercase 展开",
+            "sk-proj-Qm7vT2xLk9RbW4nZpE6sJc8YhD3fGa5uKiN1oVr0",
+        ];
+        for text in samples {
+            let active = rules.gate.active_rules(&rules.rules, text);
+            let low = text.to_lowercase();
+            let naive: Vec<bool> = rules
+                .rules
+                .iter()
+                .map(|rule| {
+                    rule.keywords.is_empty()
+                        || rule
+                            .keywords
+                            .iter()
+                            .any(|keyword| low.contains(keyword.as_str()))
+                })
+                .collect();
+            assert_eq!(active, naive, "{text:?}");
+        }
     }
 
     #[test]

@@ -103,6 +103,10 @@ pub fn restore_response_body(bytes: &[u8], table: &PlaceholderTable) -> Option<V
     if table.is_empty() {
         return None;
     }
+    // 没有占位符的响应不用解析 JSON：这一判断是线性字节扫描，远便宜于反序列化。
+    if !bytes.windows(2).any(|window| window == b"{{") {
+        return None;
+    }
 
     if let Ok(mut value) = serde_json::from_slice::<Value>(bytes) {
         let changed = restore_json(&mut value, table);
@@ -177,6 +181,12 @@ fn restore_line(table: &PlaceholderTable, line: &[u8], out: &mut Vec<u8>) {
         out.extend_from_slice(line);
         return;
     };
+
+    // 绝大多数流式行不含占位符：直接透传，省掉逐行 JSON 解析和字符串复制。
+    if !text.contains("{{") {
+        out.extend_from_slice(line);
+        return;
+    }
 
     let (body, ending) = split_line_ending(text);
     if let Some((prefix, payload)) = sse_data_payload(body) {

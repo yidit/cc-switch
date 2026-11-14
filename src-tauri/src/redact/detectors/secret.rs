@@ -4,8 +4,10 @@
 //! 提交哈希、UUID、工具调用 ID、模型名等高熵文本必须保持原样（评估语料的
 //! `keep` 列表对此有硬约束）。
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use aho_corasick::{AhoCorasick, MatchKind};
 use regex::Regex;
 
 use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
@@ -18,9 +20,21 @@ impl Detector for SecretDetector {
         if !config.secrets {
             return Vec::new();
         }
+        self.detect_impl(text, true)
+    }
+}
 
+impl SecretDetector {
+    /// 内部实现；`gated` 为 false 时跳过字面量预筛，仅供测试比对两条路径。
+    fn detect_impl(&self, text: &str, gated: bool) -> Vec<Hit> {
+        let set = rule_set();
+        // 预筛只判断「值不可能出现」：宁可多跑几次正则，也绝不能漏掉本可命中的规则。
+        let active = gated.then(|| set.gate.active(&set.rules, text));
         let mut hits = Vec::new();
-        for rule in rules() {
+        for (index, rule) in set.rules.iter().enumerate() {
+            if active.as_ref().is_some_and(|active| !active[index]) {
+                continue;
+            }
             for captures in rule.regex.captures_iter(text) {
                 let Some(found) = captures.get(rule.group) else {
                     continue;
@@ -50,60 +64,218 @@ struct Rule {
     group: usize,
     /// 额外的值校验，用于压低误报。
     validate: fn(&str) -> bool,
+    /// 字面量预筛：这些子串一个都不出现时，本条正则必然无命中。
+    ///
+    /// 请求正文动辄几十 KB，逐条跑正则才是脱敏的主要开销；先用一次自动机扫描
+    /// 排掉绝大多数规则，匹配结果与直接跑正则完全一致。
+    gate: &'static [&'static str],
 }
 
 impl Rule {
-    fn new(pattern: &str, group: usize, validate: fn(&str) -> bool) -> Self {
+    fn new(
+        pattern: &str,
+        group: usize,
+        validate: fn(&str) -> bool,
+        gate: &'static [&'static str],
+    ) -> Self {
         Self {
             regex: Regex::new(pattern).expect("内置脱敏正则应始终合法"),
             group,
             validate,
+            gate,
         }
+    }
+
+    /// 逐条比较字面量，仅在自动机构建失败时使用。
+    ///
+    /// 比较对 ASCII 不分大小写（`(?i)` 规则靠它开闸），非 ASCII 按原样比较，
+    /// 因此中文关键词仍然精确匹配。
+    fn open(&self, text: &str) -> bool {
+        self.gate.is_empty()
+            || self
+                .gate
+                .iter()
+                .any(|needle| contains_ignore_ascii_case(text, needle))
     }
 }
 
-fn rules() -> &'static [Rule] {
-    static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
+/// 字面量预筛的自动机。
+///
+/// 13 条规则一共 31 个候选字面量，逐条 `contains` 要在长文本上扫 31 遍；
+/// 用 Aho-Corasick 一遍即可得出「哪些规则可能命中」。语义与 [`Rule::open`]
+/// 完全一致：ASCII 不分大小写，非 ASCII 按原样比较。
+struct Gate {
+    /// 由全部字面量构建；构建失败时为 None，退回逐条比较，结果不变。
+    automaton: Option<AhoCorasick>,
+    /// 自动机里第 i 个字面量 → 依赖它的规则下标。
+    literal_rules: Vec<Vec<usize>>,
+    /// 没有字面量的规则，始终放行。
+    always_active: Vec<usize>,
+}
+
+impl Gate {
+    fn build(rules: &[Rule]) -> Self {
+        let mut literals: Vec<&'static str> = Vec::new();
+        let mut literal_rules: Vec<Vec<usize>> = Vec::new();
+        let mut index: HashMap<&'static str, usize> = HashMap::new();
+        let mut always_active = Vec::new();
+        for (rule_index, rule) in rules.iter().enumerate() {
+            if rule.gate.is_empty() {
+                always_active.push(rule_index);
+                continue;
+            }
+            for &literal in rule.gate {
+                let id = *index.entry(literal).or_insert_with(|| {
+                    literals.push(literal);
+                    literal_rules.push(Vec::new());
+                    literals.len() - 1
+                });
+                literal_rules[id].push(rule_index);
+            }
+        }
+
+        let automaton = if literals.is_empty() {
+            None
+        } else {
+            match AhoCorasick::builder()
+                .match_kind(MatchKind::Standard)
+                .ascii_case_insensitive(true)
+                .build(&literals)
+            {
+                Ok(automaton) => Some(automaton),
+                Err(error) => {
+                    log::warn!("[redact] 字面量预筛构建失败，退回逐条比较: {error}");
+                    None
+                }
+            }
+        };
+        Self {
+            automaton,
+            literal_rules,
+            always_active,
+        }
+    }
+
+    /// 返回每条规则是否需要跑正则。
+    fn active(&self, rules: &[Rule], text: &str) -> Vec<bool> {
+        /// 标记规则为活跃，返回是否所有规则都已活跃。
+        fn mark(active: &mut [bool], remaining: &mut usize, index: usize) -> bool {
+            if !active[index] {
+                active[index] = true;
+                *remaining -= 1;
+            }
+            *remaining == 0
+        }
+
+        let mut active = vec![false; rules.len()];
+        let mut remaining = rules.len();
+        for &index in &self.always_active {
+            mark(&mut active, &mut remaining, index);
+        }
+        if remaining == 0 {
+            return active;
+        }
+
+        let Some(automaton) = &self.automaton else {
+            // 自动机不可用：退回逐条子串比较，结果与自动机一致。
+            for (index, rule) in rules.iter().enumerate() {
+                if rule.open(text) {
+                    mark(&mut active, &mut remaining, index);
+                }
+            }
+            return active;
+        };
+
+        // Standard 语义下 overlapping 迭代会报告每一处出现，互相包含的字面量也不会漏。
+        'scan: for found in automaton.find_overlapping_iter(text) {
+            for &index in &self.literal_rules[found.pattern().as_usize()] {
+                if mark(&mut active, &mut remaining, index) {
+                    break 'scan;
+                }
+            }
+        }
+        active
+    }
+}
+
+/// 判断 `haystack` 是否包含 `needle`：ASCII 部分不分大小写，其余按原样比较。
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if !needle.is_ascii() {
+        return haystack.contains(needle);
+    }
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    let haystack = haystack.as_bytes();
+    haystack
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// 全部内置规则及其预筛自动机。
+struct RuleSet {
+    rules: Vec<Rule>,
+    gate: Gate,
+}
+
+fn rule_set() -> &'static RuleSet {
+    static RULES: OnceLock<RuleSet> = OnceLock::new();
     RULES.get_or_init(|| {
-        vec![
+        let rules = vec![
             // PEM 私钥块。
             Rule::new(
                 r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]+?-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----",
                 0,
                 always,
+                &["-----BEGIN "],
             ),
             // OpenAI / Anthropic / OpenRouter 等 `sk-` 前缀的 key。
             Rule::new(
                 r"\bsk-(?:ant-|proj-|or-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}",
                 0,
                 looks_like_key,
+                &["sk-"],
             ),
             // Google API key（前缀后至少 35 位，实际长度可能更长）。
-            Rule::new(r"AIza[0-9A-Za-z_-]{35,}", 0, always),
+            Rule::new(r"AIza[0-9A-Za-z_-]{35,}", 0, always, &["AIza"]),
             // Slack token。
-            Rule::new(r"xox[abposr]-[0-9A-Za-z-]{10,}", 0, always),
+            Rule::new(r"xox[abposr]-[0-9A-Za-z-]{10,}", 0, always, &["xox"]),
             // AWS access key id。
-            Rule::new(r"(?:AKIA|ASIA)[0-9A-Z]{16}", 0, always),
+            Rule::new(r"(?:AKIA|ASIA)[0-9A-Z]{16}", 0, always, &["AKIA", "ASIA"]),
             // GitHub classic / fine-grained token。
-            Rule::new(r"gh[pousr]_[A-Za-z0-9]{20,}", 0, always),
-            Rule::new(r"github_pat_[A-Za-z0-9_]{20,}", 0, always),
+            Rule::new(
+                r"gh[pousr]_[A-Za-z0-9]{20,}",
+                0,
+                always,
+                &["ghp_", "gho_", "ghu_", "ghs_", "ghr_"],
+            ),
+            Rule::new(
+                r"github_pat_[A-Za-z0-9_]{20,}",
+                0,
+                always,
+                &["github_pat_"],
+            ),
             // JWT：三段 base64url。
             Rule::new(
                 r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
                 0,
                 always,
+                &["eyJ"],
             ),
             // Authorization: Bearer <token>
             Rule::new(
                 r"(?i)\bauthorization\s*:\s*bearer\s+([A-Za-z0-9._~+/=-]{8,})",
                 1,
                 always,
+                &["authorization"],
             ),
             // 连接串里的密码：scheme://user:password@host
             Rule::new(
                 r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]+:([^\s@/]{4,})@",
                 1,
                 always,
+                &["://"],
             ),
             // KEY=value / KEY: value 形态，键名必须按分隔符组成敏感词。
             //
@@ -113,6 +285,7 @@ fn rules() -> &'static [Rule] {
                 r#"(?i)\b(?:[A-Za-z0-9]+[_.-])*(?:api[_-]?key|apikey|secret|token|password|passwd|private[_-]?key|access[_-]?key)(?:[_.-][A-Za-z0-9]+)*\s*[:=]\s*["']?([^\s"'`,;，。]{8,})"#,
                 1,
                 is_plausible_secret_value,
+                &["api", "secret", "token", "password", "passwd", "private", "access"],
             ),
             // 自然语言：password is … / password: …
             //
@@ -121,14 +294,18 @@ fn rules() -> &'static [Rule] {
                 r#"(?i)\b(?:password|passwd|secret|token|api[ _-]?key)\b\s*(?:is|was|are|[:=])\s*["']?([^\s"',，。;；]{6,})"#,
                 1,
                 is_plausible_secret_value,
+                &["api", "secret", "token", "password", "passwd"],
             ),
             // 中文：密码/口令/密钥 + 是/为/:/=
             Rule::new(
                 r"(?:密码|口令|密钥|秘钥)\s*(?:是|为|[:=])\s*([^\s，。;；、]{6,})",
                 1,
                 always,
+                &["密码", "口令", "密钥", "秘钥"],
             ),
-        ]
+        ];
+        let gate = Gate::build(&rules);
+        RuleSet { rules, gate }
     })
 }
 
@@ -436,5 +613,47 @@ mod tests {
         assert!(SecretDetector
             .detect("DB_PASSWORD=Tr0ub4dor&3xyz", &config)
             .is_empty());
+    }
+
+    /// 预筛只能「提前排除必不命中的规则」，不能让结果发生变化。
+    #[test]
+    fn literal_gate_never_hides_a_match() {
+        let pem = concat!(
+            "-----BEGIN RSA ",
+            "PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA ",
+            "PRIVATE KEY-----"
+        );
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0MjEiLCJuYW1lIjoiTWFyaWEifQ.x7Hq2LmZ9pVb4WnT8sRc1YeKd6gJ3uFa0oNi5vQwE";
+        let samples = [
+            pem,
+            "OPENAI_API_KEY=sk-proj-Qm7vT2xLk9RbW4nZpE6sJc8YhD3fGa5uKiN1oVr0",
+            "const maps = 'AIzaSyB3xQ9mLk2Vr7TpW4nZs8YhC1dFgJ6uKe0oA';",
+            "SLACK_TOKEN=xoxb-123456789012-abcdefghijkl",
+            "key = AKIAIOSFODNN7EXAMPLE",
+            "key = ASIAIOSFODNN7EXAMPLE",
+            "const gh = \"ghp_0123456789abcdefghijABCDEFGHIJ0123\";",
+            "const pat = \"github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz\";",
+            jwt,
+            "-H 'AUTHORIZATION: BEARER abc123def456ghi'",
+            "DATABASE_URL=postgres://app:hunter2pass@db.acme-corp.cn:5432/orders",
+            "DB_PASSWORD=Tr0ub4dor&3xyz",
+            "the staging db password is hunter2Xq9z, don't commit it",
+            "服务器密码是 Qw8!zLp3mN，用完记得改掉",
+            "DEBUG=true",
+            "use tokenizers::Tokenizer;",
+            "password: correcthorsebatterystaple",
+            "这是一段普通文本，没有任何敏感值。",
+        ];
+
+        for sample in samples {
+            let gated = SecretDetector.detect_impl(sample, true);
+            let ungated = SecretDetector.detect_impl(sample, false);
+            assert_eq!(gated, ungated, "预筛漏掉了命中：{sample:?}");
+        }
+    }
+
+    #[test]
+    fn every_builtin_rule_has_a_literal_gate() {
+        assert!(rule_set().rules.iter().all(|rule| !rule.gate.is_empty()));
     }
 }

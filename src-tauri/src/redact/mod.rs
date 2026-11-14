@@ -23,6 +23,7 @@ use detectors::{
 
 pub use detectors::gitleaks::warm_up as warm_up_secret_rules;
 pub use detectors::rules::invalid_rules;
+
 pub use json::{mask_json, restore_json, JsonMaskStats};
 pub use model::ModelEngine;
 pub use placeholder::PlaceholderTable;
@@ -101,21 +102,33 @@ impl Engine {
         table: &mut PlaceholderTable,
         extra: &[Hit],
     ) -> MaskOutcome {
+        let mut owned = text.to_string();
+        let (hits, placeholders) = self.mask_in_place(&mut owned, config, table, extra);
+        MaskOutcome {
+            text: owned,
+            hits,
+            placeholders,
+        }
+    }
+
+    /// 就地脱敏：没有命中时不复制、不改写原字符串。
+    ///
+    /// JSON 遍历直接复用请求体里的字符串，省掉「复制一份 → 丢弃原串」的开销；
+    /// 返回的 `hits` 已按位置排序且互不重叠。
+    pub(crate) fn mask_in_place(
+        &self,
+        text: &mut String,
+        config: &RedactConfig,
+        table: &mut PlaceholderTable,
+        extra: &[Hit],
+    ) -> (Vec<Hit>, usize) {
         if !config.enabled {
-            return MaskOutcome {
-                text: text.to_string(),
-                hits: Vec::new(),
-                placeholders: 0,
-            };
+            return (Vec::new(), 0);
         }
 
         let hits = self.collect_hits(text, config, extra);
         if hits.is_empty() {
-            return MaskOutcome {
-                text: text.to_string(),
-                hits,
-                placeholders: 0,
-            };
+            return (hits, 0);
         }
 
         let mut out = String::with_capacity(text.len());
@@ -135,12 +148,9 @@ impl Engine {
             cursor = hit.end;
         }
         out.push_str(&text[cursor..]);
+        *text = out;
 
-        MaskOutcome {
-            text: out,
-            hits,
-            placeholders,
-        }
+        (hits, placeholders)
     }
 
     /// 收集所有检测器的结果，排序并丢弃重叠区间。
@@ -174,6 +184,16 @@ impl Engine {
         }
         merged
     }
+}
+
+/// 预热脱敏相关的一次性初始化。
+///
+/// 构造一次引擎就能编译内置密钥规则、自定义词与自定义规则（三者都有缓存）；
+/// gitleaks 的正则是独立的静态表，单独预热。调用方应放到后台线程执行，
+/// 让保存设置后的第一个请求不必承担编译耗时。
+pub fn warm_up(config: &RedactConfig) {
+    let _ = Engine::with_builtin(config);
+    detectors::gitleaks::warm_up();
 }
 
 #[cfg(test)]

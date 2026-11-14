@@ -3,36 +3,80 @@
 //! 词按 PERSON 记录。中文没有词边界，含非 ASCII 的词始终按子串匹配；
 //! 纯 ASCII 词在 `words_whole` 开启时使用 `\b` 边界。
 
+use std::sync::{Arc, Mutex};
+
 use regex::Regex;
 
 use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
 
+/// 最近一次编译结果。
+///
+/// 每个代理请求都会重建一次 [`crate::redact::Engine`]；词表通常不变，重新编译
+/// 这些正则纯属浪费。设置很少变动，单槽缓存就足够：配置变化时自然失配重建。
+static CACHE: Mutex<Option<CacheEntry>> = Mutex::new(None);
+
+struct CacheEntry {
+    /// 编译时使用的词表快照，用于判断配置是否变化。
+    words: Vec<String>,
+    any_case: bool,
+    whole: bool,
+    patterns: Arc<Vec<Regex>>,
+}
+
 pub struct WordDetector {
-    patterns: Vec<Regex>,
+    patterns: Arc<Vec<Regex>>,
 }
 
 impl WordDetector {
     pub fn new(words: &[String], any_case: bool, whole: bool) -> Self {
-        let patterns = words
-            .iter()
-            .filter(|word| !word.is_empty())
-            .filter_map(|word| {
-                let escaped = regex::escape(word);
-                let pattern = if whole && word.is_ascii() {
-                    format!(r"\b{escaped}\b")
-                } else {
-                    escaped
+        let mut cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(entry) = cache.as_ref() {
+            // 逐项比较而不是先克隆词表：命中路径上不产生分配。
+            if entry.any_case == any_case
+                && entry.whole == whole
+                && entry.words.len() == words.len()
+                && entry
+                    .words
+                    .iter()
+                    .zip(words)
+                    .all(|(cached, word)| cached == word)
+            {
+                return Self {
+                    patterns: Arc::clone(&entry.patterns),
                 };
-                let pattern = if any_case {
-                    format!("(?i){pattern}")
-                } else {
-                    pattern
-                };
-                Regex::new(&pattern).ok()
-            })
-            .collect();
+            }
+        }
+
+        let patterns = Arc::new(compile(words, any_case, whole));
+        *cache = Some(CacheEntry {
+            words: words.to_vec(),
+            any_case,
+            whole,
+            patterns: Arc::clone(&patterns),
+        });
         Self { patterns }
     }
+}
+
+fn compile(words: &[String], any_case: bool, whole: bool) -> Vec<Regex> {
+    words
+        .iter()
+        .filter(|word| !word.is_empty())
+        .filter_map(|word| {
+            let escaped = regex::escape(word);
+            let pattern = if whole && word.is_ascii() {
+                format!(r"\b{escaped}\b")
+            } else {
+                escaped
+            };
+            let pattern = if any_case {
+                format!("(?i){pattern}")
+            } else {
+                pattern
+            };
+            Regex::new(&pattern).ok()
+        })
+        .collect()
 }
 
 impl Detector for WordDetector {
@@ -42,7 +86,7 @@ impl Detector for WordDetector {
             return Vec::new();
         }
         let mut hits = Vec::new();
-        for regex in &self.patterns {
+        for regex in self.patterns.iter() {
             for found in regex.find_iter(text) {
                 hits.push(Hit {
                     start: found.start(),
@@ -104,6 +148,28 @@ mod tests {
         assert_eq!(
             detect("这是秘密项目，不要外传", &["秘密项目"], false, true),
             vec!["秘密项目"]
+        );
+    }
+
+    #[test]
+    fn recompiles_when_the_configuration_changes() {
+        // 缓存要随配置换键：大小写开关不同，匹配结果必须跟着变，
+        // 切回旧配置时也不能沿用上一份正则。
+        let words = vec!["Secret".to_string()];
+        let config = RedactConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let case_insensitive = WordDetector::new(&words, true, true);
+        let case_sensitive = WordDetector::new(&words, false, true);
+
+        assert_eq!(case_insensitive.detect("secret here", &config).len(), 1);
+        assert!(case_sensitive.detect("secret here", &config).is_empty());
+        assert_eq!(
+            WordDetector::new(&words, true, true)
+                .detect("secret here", &config)
+                .len(),
+            1
         );
     }
 }

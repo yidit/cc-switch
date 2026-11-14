@@ -1159,8 +1159,15 @@ pub fn get_settings() -> AppSettings {
 }
 
 /// 当前生效的请求脱敏配置（未设置时为默认关闭）。
+///
+/// 直接读锁克隆脱敏配置本身：`get_settings()` 会克隆整个 `AppSettings`
+/// （含全部供应商配置与同步凭据），每个代理请求都做一次纯属浪费。
 pub fn redact_config() -> crate::redact::RedactConfig {
-    get_settings().redact.clone().unwrap_or_default()
+    let settings = settings_store().read().unwrap_or_else(|e| {
+        log::warn!("设置锁已毒化，使用恢复值: {e}");
+        e.into_inner()
+    });
+    settings.redact.clone().unwrap_or_default()
 }
 
 pub fn get_settings_for_frontend() -> AppSettings {

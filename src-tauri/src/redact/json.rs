@@ -10,33 +10,35 @@ use serde_json::Value;
 use crate::redact::{Engine, Hit, ModelEngine, PlaceholderTable, RedactConfig};
 
 /// 这些键的值是协议枚举或标识符，不参与脱敏。
+///
+/// 必须保持字典序：`should_skip` 对全小写键直接二分查找。
 const SKIP_KEYS: &[&str] = &[
-    "type",
-    "role",
-    "object",
-    "model",
-    "finish_reason",
-    "stop_reason",
-    "status",
-    "event",
-    "modalities",
-    "format",
+    "call_id",
     "encoding",
-    "media_type",
-    "mime_type",
+    "encrypted_content",
+    "event",
+    "finish_reason",
+    "format",
     "id",
     "item_id",
-    "session_id",
+    "media_type",
+    "mime_type",
+    "modalities",
+    "model",
+    "object",
     "request_id",
     "response_id",
-    "tool_use_id",
-    "tool_call_id",
-    "call_id",
+    "role",
+    "session_id",
     // 不透明签名与加密内容：改一个字节上游就会拒绝，且高熵值会误触密钥规则。
     "signature",
-    "thoughtsignature",
+    "status",
+    "stop_reason",
     "thought_signature",
-    "encrypted_content",
+    "thoughtsignature",
+    "tool_call_id",
+    "tool_use_id",
+    "type",
 ];
 
 /// 一次 JSON 脱敏的统计。
@@ -68,6 +70,7 @@ pub fn mask_json(
 
     let model_hits = match model {
         Some(model) if config.model.enabled => {
+            // 只借用字符串，不克隆：请求体可能有几 MB 的文本，复制一份纯属浪费内存。
             let mut texts = Vec::new();
             collect_strings(value, None, &mut texts);
 
@@ -83,6 +86,8 @@ pub fn mask_json(
                     hits.insert(index, found);
                 }
             }
+            // 释放对 value 的不可变借用，下面才能就地改写。
+            drop(texts);
             Some(hits)
         }
         _ => None,
@@ -102,12 +107,12 @@ pub fn mask_json(
     Ok(stats)
 }
 
-fn collect_strings(value: &Value, key: Option<&str>, out: &mut Vec<String>) {
+fn collect_strings<'a>(value: &'a Value, key: Option<&str>, out: &mut Vec<&'a str>) {
     match value {
         Value::String(text)
             if !key.is_some_and(should_skip) && !looks_like_encoded_payload(text) =>
         {
-            out.push(text.clone())
+            out.push(text)
         }
         Value::String(_) => {}
         Value::Array(items) => {
@@ -160,11 +165,11 @@ fn walk_mask(
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
 
-            let outcome = engine.mask_text_with(text, config, table, extra);
-            *text = outcome.text;
+            // 就地脱敏：没有命中时原字符串保持不变，不再整段复制。
+            let (hits, placeholders) = engine.mask_in_place(text, config, table, extra);
             stats.strings += 1;
-            stats.hits += outcome.hits.len();
-            stats.placeholders += outcome.placeholders;
+            stats.hits += hits.len();
+            stats.placeholders += placeholders;
         }
         Value::Array(items) => {
             for item in items {
@@ -232,6 +237,11 @@ fn walk_restore(value: &mut Value, table: &PlaceholderTable, restored: &mut usiz
 }
 
 fn should_skip(key: &str) -> bool {
+    // 协议字段名绝大多数是全小写：直接二分，省掉对 35 个键的逐项比较。
+    if !key.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return SKIP_KEYS.binary_search(&key).is_ok();
+    }
+    // 少见的大写写法（如 `Type`）退回大小写不敏感比较。
     SKIP_KEYS.iter().any(|skip| skip.eq_ignore_ascii_case(key))
 }
 
@@ -259,23 +269,19 @@ fn looks_like_encoded_payload(text: &str) -> bool {
     // 键值也只由字母数字和 `= _ -` 组成，必须靠比例和空白规则把它们排除。
     let mut allowed = 0usize;
     let mut total = 0usize;
-    let mut has_whitespace = false;
     for ch in body.chars() {
+        // data URL 允许带换行；其他文本只要出现空白就不是编码数据（多行 .env、
+        // 密钥配置同样只由安全字符组成），可以当场判定，不必再扫完整段文本。
+        if ch.is_whitespace() && !is_data_url {
+            return false;
+        }
         total += 1;
         if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '-' | '_') {
             allowed += 1;
         }
-        if ch.is_whitespace() {
-            has_whitespace = true;
-        }
     }
-    if total == 0 || allowed * 100 < total * 98 {
-        return false;
-    }
-
-    // data URL 允许带换行；其他文本只有「完全没有空白」时才算编码数据，
-    // 否则多行 .env、密钥配置这类同样只含安全字符的文本会被整段跳过。
-    is_data_url || !has_whitespace
+    // data URL 的正文再按比例判断是否真的像编码数据。
+    total > 0 && allowed * 100 >= total * 98
 }
 
 #[cfg(test)]
