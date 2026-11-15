@@ -56,16 +56,29 @@ fn merge_settings_for_save(
     incoming.proxy_client_host = existing.proxy_client_host.clone();
     // 轻量模式状态只由进入 / 退出轻量模式时写，前端缓存里的值总是旧的。
     incoming.lightweight_mode = existing.lightweight_mode;
+    // 脱敏配置：前端未提供时保留现有值；`Some` 表示用户显式保存（包括关闭）。
+    if incoming.redact.is_none() {
+        incoming.redact = existing.redact.clone();
+    }
+    if let Some(redact) = incoming.redact.as_mut() {
+        // 占位符盐值由后端维护：沿用已保存的盐值，没有时生成一个，随本次保存写入设置。
+        // 盐值只影响占位符后缀，不参与加密，前端无需处理。
+        if redact.salt.is_none() {
+            redact.salt = existing
+                .redact
+                .as_ref()
+                .and_then(|current| current.salt.clone())
+                .or_else(|| Some(uuid::Uuid::new_v4().simple().to_string()));
+        }
+    }
     incoming
 }
 
-/// 获取设置
 #[tauri::command]
 pub async fn get_settings() -> Result<crate::settings::AppSettings, String> {
     Ok(crate::settings::get_settings_for_frontend())
 }
 
-/// 保存设置
 #[tauri::command]
 pub async fn save_settings(
     app: tauri::AppHandle,
@@ -88,9 +101,14 @@ pub async fn save_settings(
     let tray_style_changed = merged.native_tray_menu != existing.native_tray_menu;
     let without_login_changed =
         merged.codex_proxy_without_official_login != existing.codex_proxy_without_official_login;
+    // 脱敏规则首次使用要编译正则，本地模型首次推理要加载约 60 MB。保存后按
+    // 新配置在后台预热；模型关闭（或类型全部关上）时顺带释放已加载的实例。
+    // `merged` 随后会被移动，这里先取一份配置。
+    let redact_config = merged.redact.clone().unwrap_or_default();
     let preserve_login_changed = merged.preserve_codex_official_auth_on_switch
         != existing.preserve_codex_official_auth_on_switch;
     crate::settings::update_settings(merged).map_err(|e| e.to_string())?;
+    std::thread::spawn(move || crate::redact::prepare(&redact_config));
 
     // 原生托盘菜单 / 托盘面板当场切换，不用重启。
     if tray_style_changed {
@@ -348,7 +366,6 @@ pub async fn set_app_config_dir_override(
     Ok(true)
 }
 
-/// 设置开机自启
 #[tauri::command]
 pub async fn set_auto_launch(enabled: bool) -> Result<bool, String> {
     if enabled {
@@ -693,13 +710,11 @@ mod tests {
     }
 }
 
-/// 获取开机自启状态
 #[tauri::command]
 pub async fn get_auto_launch_status() -> Result<bool, String> {
     crate::auto_launch::is_auto_launch_enabled().map_err(|e| format!("获取开机自启状态失败: {e}"))
 }
 
-/// 获取整流器配置
 #[tauri::command]
 pub async fn get_rectifier_config(
     state: tauri::State<'_, crate::AppState>,
@@ -707,7 +722,6 @@ pub async fn get_rectifier_config(
     state.db.get_rectifier_config().map_err(|e| e.to_string())
 }
 
-/// 设置整流器配置
 #[tauri::command]
 pub async fn set_rectifier_config(
     state: tauri::State<'_, crate::AppState>,
@@ -720,7 +734,6 @@ pub async fn set_rectifier_config(
     Ok(true)
 }
 
-/// 获取优化器配置
 #[tauri::command]
 pub async fn get_optimizer_config(
     state: tauri::State<'_, crate::AppState>,
@@ -728,7 +741,6 @@ pub async fn get_optimizer_config(
     state.db.get_optimizer_config().map_err(|e| e.to_string())
 }
 
-/// 设置优化器配置
 #[tauri::command]
 pub async fn set_optimizer_config(
     state: tauri::State<'_, crate::AppState>,
@@ -738,34 +750,6 @@ pub async fn set_optimizer_config(
         .db
         .set_optimizer_config(&config)
         .map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-/// 获取隐私过滤器配置
-#[tauri::command]
-pub async fn get_privacy_filter_config(
-    state: tauri::State<'_, crate::AppState>,
-) -> Result<crate::proxy::types::PrivacyFilterConfig, String> {
-    state
-        .db
-        .get_privacy_filter_config()
-        .map_err(|e| e.to_string())
-}
-
-/// 设置隐私过滤器配置
-#[tauri::command]
-pub async fn set_privacy_filter_config(
-    state: tauri::State<'_, crate::AppState>,
-    config: crate::proxy::types::PrivacyFilterConfig,
-) -> Result<bool, String> {
-    state
-        .db
-        .set_privacy_filter_config(&config)
-        .map_err(|e| e.to_string())?;
-    if config.enabled {
-        // 规则编译有一次性耗时，开关打开时在后台预热，不压到第一个请求上
-        std::thread::spawn(crate::proxy::privacy_filter::warm_up);
-    }
     Ok(true)
 }
 
@@ -780,7 +764,6 @@ pub async fn get_copilot_optimizer_config(
         .map_err(|e| e.to_string())
 }
 
-/// 设置 Copilot 优化器配置
 #[tauri::command]
 pub async fn set_copilot_optimizer_config(
     state: tauri::State<'_, crate::AppState>,
@@ -793,7 +776,6 @@ pub async fn set_copilot_optimizer_config(
     Ok(true)
 }
 
-/// 获取日志配置
 #[tauri::command]
 pub async fn get_log_config(
     state: tauri::State<'_, crate::AppState>,
@@ -801,7 +783,6 @@ pub async fn get_log_config(
     state.db.get_log_config().map_err(|e| e.to_string())
 }
 
-/// 设置日志配置
 #[tauri::command]
 pub async fn set_log_config(
     state: tauri::State<'_, crate::AppState>,

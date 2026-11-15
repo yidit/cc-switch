@@ -11,28 +11,27 @@ use super::{
     json_canonical::{canonicalize_value, short_value_hash},
     log_codes::fwd as log_fwd,
     opaque_state_rectifier::{
-        carries_encrypted_agent_task, detect_opaque_state_rejection,
+        carries_encrypted_agent_task, carries_opaque_state, detect_opaque_state_rejection,
         rectify_claude_responses_replay, rectify_opaque_state, unreadable_agent_task_error,
         OpaqueStateRejection,
     },
     provider_router::ProviderRouter,
     providers::{
         codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore, get_adapter,
-        AuthInfo, AuthStrategy, ProviderAdapter, ProviderType,
+        AuthInfo, AuthStrategy, ClaudeAdapter, ProviderAdapter, ProviderType,
     },
     thinking_budget_rectifier::{rectify_thinking_budget, should_rectify_thinking_budget},
     thinking_rectifier::{
         normalize_thinking_type, rectify_anthropic_request, should_rectify_thinking_signature,
     },
-    types::{
-        CopilotOptimizerConfig, OptimizerConfig, PrivacyFilterConfig, ProxyStatus, RectifierConfig,
-    },
+    types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
 use crate::commands::{CodexOAuthState, CopilotAuthState, XaiOAuthState};
+use crate::provider_kind::{is_copilot_url, ProviderKind};
 use crate::proxy::providers::copilot_auth::{CopilotAuthError, CopilotAuthManager};
 use crate::proxy::providers::copilot_model_map::{
-    CopilotProtocol, CopilotTransport, ResolvedCopilotModel,
+    transport_for, CopilotProtocol, CopilotTransport, ResolvedCopilotModel,
 };
 use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::{
@@ -75,7 +74,7 @@ fn is_opencode_upstream(upstream_host: Option<&str>) -> bool {
 /// it must not change between the turns of a conversation. Claude Desktop hands
 /// CC Switch a fresh id on every request, which defeats that; hashing the
 /// conversation prefix keeps the id stable while still separating conversations.
-fn conversation_fingerprint(body: &Value) -> Option<String> {
+pub(crate) fn conversation_fingerprint(body: &Value) -> Option<String> {
     let mut hasher = Sha256::new();
     let mut fed = false;
     if let Some(system) = body.get("system") {
@@ -376,6 +375,11 @@ pub struct RequestForwarder {
     optimizer_config: OptimizerConfig,
     /// Copilot 优化器配置
     copilot_optimizer_config: CopilotOptimizerConfig,
+    /// 脱敏前基于原文算好的会话指纹。
+    ///
+    /// 脱敏会改写 system / messages，占位符若每次请求都重新随机，指纹就会每轮不同；
+    /// 这里优先使用请求进入时算好的值。
+    conversation_fingerprint_hint: Option<String>,
     /// 非流式请求超时（秒）
     non_streaming_timeout: std::time::Duration,
     /// 流式请求响应头等待超时（秒）
@@ -395,8 +399,6 @@ pub struct RequestForwarder {
     /// 最近一次 `forward()` 定下的出站模型名，失败时随 [`ForwardError`] 交给日志。
     /// 每次 `forward()` 开头清空，映射失败等没走到出站的尝试留 None（日志回落到请求名）。
     last_outbound_model: std::sync::Mutex<Option<String>>,
-    /// 隐私过滤配置。在 [`Self::forward`] 里对定稿的上游请求体执行，每次尝试都会执行。
-    privacy_filter: PrivacyFilterConfig,
 }
 
 impl RequestForwarder {
@@ -533,6 +535,7 @@ impl RequestForwarder {
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,
+            conversation_fingerprint_hint: None,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
             streaming_first_byte_timeout: std::time::Duration::from_secs(
                 streaming_first_byte_timeout,
@@ -541,80 +544,16 @@ impl RequestForwarder {
             stack_request: false,
             failover_chain: false,
             last_outbound_model: std::sync::Mutex::new(None),
-            privacy_filter: PrivacyFilterConfig::default(),
         }
     }
 
-    /// 设置隐私过滤配置
-    pub fn privacy_filter(mut self, config: PrivacyFilterConfig) -> Self {
-        self.privacy_filter = config;
-        self
-    }
-
-    /// 隐私过滤：开关打开时脱敏请求体。[`Self::forward`] 每次尝试都会调用：
-    ///
-    /// 1. `client`：模型映射之后、主要的协议转换和 Copilot 分类 / 合并之前，请求体还是客户端
-    ///    格式，分得清用户文本和工具结果（Copilot 会把用户文本并进 tool_result）。更早的
-    ///    Bedrock 预处理、MiMo 历史整理、分类器重试检查只在本地读写，不外发内容。
-    /// 2. `copilot`（只有 Copilot 优化器运行时）：孤儿 tool_result 降级成文本、tool_result 合并
-    ///    之后，确定性请求 ID 之前，让降级出来的文本也先过滤再参与哈希。
-    /// 3. `override`（只有供应商配置了本地 body 覆写时）：合并前过滤覆写的临时副本，见
-    ///    [`Self::privacy_filtered_overrides`]。
-    /// 4. `upstream`：所有变换（格式转换、历史回填、压缩摘要回放、本地 body 覆写）之后、
-    ///    日志哈希和序列化之前，兜住代理自己补进请求的内容。转换会把孤儿工具结果降级成用户
-    ///    文本，这些内容在这一遍按用户文本过滤（宁可多脱敏）。
-    ///
-    /// 内容派生的标识（OpenCode 会话指纹、Copilot 确定性请求 ID）仍是对已过滤正文算 SHA-256。
-    /// 替换结果与原文相同的命中不改写、不计数。占位符跟随界面语言（没设过语言时按系统区域，
-    /// 与托盘一致）。
-    fn apply_privacy_filter(&self, app_type: &AppType, body: &mut Value, stage: &str) {
-        if !self.privacy_filter.enabled {
-            return;
-        }
-        let language = crate::tray::tray_language();
-        let placeholders = super::privacy_filter::Placeholders::for_language(&language);
-        let count = super::privacy_filter::redact_request_body(
-            body,
-            placeholders,
-            self.privacy_filter.filter_tool_results,
-        );
-        if count > 0 {
-            log::info!(
-                "[{}] Privacy filter redacted {} item(s) in {} body, session: {}",
-                app_type.as_str(),
-                count,
-                stage,
-                self.session_id
-            );
-        }
-    }
-
-    /// Copilot 优化的第 2、3 步：清洗孤立 tool_result（降级成文本）、合并 tool_result 与文本，
-    /// 然后对结果再过滤一遍隐私，降级出来的文本在参与确定性请求 ID 之前就已经脱敏。
-    fn copilot_rewrite_tool_results(&self, app_type: &AppType, body: Value) -> Value {
+    /// Copilot 优化的第 2、3 步：清洗孤立 tool_result（降级成文本）、合并 tool_result 与文本。
+    fn copilot_rewrite_tool_results(&self, body: Value) -> Value {
         let mut body = super::copilot_optimizer::sanitize_orphan_tool_results(body);
         if self.copilot_optimizer_config.tool_result_merging {
             body = super::copilot_optimizer::merge_tool_results(body);
         }
-        self.apply_privacy_filter(app_type, &mut body, "copilot");
         body
-    }
-
-    /// 本地 body 覆写是在客户端那一遍之后才合并进请求体的内容，合并前先过滤一份临时副本。
-    /// 持久化的供应商配置不改；只用到 body，headers 不参与合并。
-    fn privacy_filtered_overrides(
-        &self,
-        app_type: &AppType,
-        overrides: &LocalProxyRequestOverrides,
-    ) -> LocalProxyRequestOverrides {
-        let mut body = overrides.body.clone();
-        if let Some(body) = body.as_mut() {
-            self.apply_privacy_filter(app_type, body, "override");
-        }
-        LocalProxyRequestOverrides {
-            headers: Default::default(),
-            body,
-        }
     }
 
     fn set_last_outbound_model(&self, model: Option<String>) {
@@ -639,6 +578,12 @@ impl RequestForwarder {
     /// 这个请求走故障转移队列（故障转移开着）。
     pub fn failover_chain(mut self, failover_chain: bool) -> Self {
         self.failover_chain = failover_chain;
+        self
+    }
+
+    /// 使用脱敏前基于原文算好的会话指纹。
+    pub fn with_conversation_fingerprint(mut self, hint: Option<String>) -> Self {
+        self.conversation_fingerprint_hint = hint;
         self
     }
 
@@ -1061,7 +1006,8 @@ impl RequestForwarder {
                 Err(mut e) => {
                     // 检测是否需要触发整流器（上游为 Anthropic Messages 的供应商）
                     let is_anthropic_provider = uses_anthropic_rectifiers(
-                        ProviderType::from_app_type_and_config(app_type, provider),
+                        matches!(app_type, AppType::Claude | AppType::ClaudeDesktop)
+                            .then(|| ClaudeAdapter::new().provider_type(provider)),
                     );
                     let mut signature_rectifier_non_retryable_client_error = false;
 
@@ -1668,8 +1614,6 @@ impl RequestForwarder {
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
-        // 隐私过滤第一遍：必须在 Copilot 分类 / 合并和内容派生的请求 ID 之前
-        self.apply_privacy_filter(app_type, &mut mapped_body, "client");
         let is_copilot_codex_responses = matches!(app_type, AppType::Codex)
             && is_copilot
             && super::providers::is_codex_responses_endpoint(endpoint);
@@ -1695,7 +1639,10 @@ impl RequestForwarder {
             && native_session_header(headers).is_none()
             && is_opencode_upstream(base_url_host.as_deref())
         {
-            conversation_fingerprint(&mapped_body)
+            self.conversation_fingerprint_hint
+                .clone()
+                // 没有预计算值时（非 handler 构造的场景）退回映射后的请求体。
+                .or_else(|| conversation_fingerprint(&mapped_body))
         } else {
             None
         };
@@ -1760,8 +1707,7 @@ impl RequestForwarder {
             // 2. 孤立 tool_result 清理 — 分类完成后再清洗
             //    防止上游 API 因不匹配的 tool_result 报错导致重试/重复计费
             // 3. Tool result 合并 — 将 [tool_result, text] 变为 [tool_result(含text)]
-            //    之后再过滤一遍隐私，降级出来的文本先脱敏再参与下面的确定性请求 ID
-            mapped_body = self.copilot_rewrite_tool_results(app_type, mapped_body);
+            mapped_body = self.copilot_rewrite_tool_results(mapped_body);
 
             // 4. Warmup 小模型降级
             if self.copilot_optimizer_config.warmup_downgrade && classification.is_warmup {
@@ -2047,9 +1993,14 @@ impl RequestForwarder {
             }
             let reasoning_config =
                 super::providers::resolve_codex_chat_reasoning_config(provider, &mapped_body);
+            // 严格校验的上游（Mistral）拒收 assistant 历史里的 reasoning_content，
+            // 与 Claude → Chat 路径的 should_preserve_reasoning_content_for_openai_chat 同口径。
+            let preserve_reasoning_content =
+                !super::providers::codex_chat_upstream_rejects_reasoning_content(&base_url);
             let mut chat_body = super::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning(
                 mapped_body,
                 reasoning_config.as_ref(),
+                preserve_reasoning_content,
             )?;
             let signature_fallbacks =
                 super::providers::codex_chat_common::fill_gemini_thought_signature_fallback(
@@ -2308,20 +2259,12 @@ impl RequestForwarder {
                 .as_ref()
                 .and_then(|meta| meta.local_proxy_request_overrides.as_ref())
             {
-                let redacted_overrides;
-                let overrides = if self.privacy_filter.enabled && overrides.body.is_some() {
-                    redacted_overrides = self.privacy_filtered_overrides(app_type, overrides);
-                    &redacted_overrides
-                } else {
-                    overrides
-                };
                 if apply_local_proxy_body_overrides(&mut filtered_body, overrides) {
                     filtered_body = prepare_upstream_request_body(filtered_body);
                 }
             }
         }
         // 请求体到这里定稿；之后只读不改（日志哈希、序列化）
-        self.apply_privacy_filter(app_type, &mut filtered_body, "upstream");
         // 出站 body 定稿后刷新真值（覆盖 Codex chat 上游模型覆写、转换层模型改写）
         if let Some(m) = filtered_body
             .get("model")
@@ -2974,13 +2917,13 @@ impl RequestForwarder {
             short_value_hash(Some(&filtered_body))
         );
 
-        // 序列化后释放工作副本；只有加密子任务的流式判错还需要保留请求体。
-        let encrypted_agent_request = (matches!(app_type, AppType::Codex | AppType::GrokBuild)
+        // 序列化后释放工作副本；只有带着上游签发状态的流式请求，判流内拒绝时还要用请求体。
+        let opaque_state_request = (matches!(app_type, AppType::Codex | AppType::GrokBuild)
             && !codex_responses_to_chat
             && !codex_responses_to_anthropic
             && request_is_streaming
             && self.rectifier_config.enabled
-            && carries_encrypted_agent_task(&filtered_body))
+            && carries_opaque_state(&filtered_body))
         .then_some(filtered_body);
 
         // 确定超时
@@ -3100,13 +3043,11 @@ impl RequestForwarder {
                     // A response.failed/error before output remains failover-safe.
                     response = self.validate_responses_stream_start(response).await?;
                 }
-            } else if let Some(request) = encrypted_agent_request
+            } else if let Some(request) = opaque_state_request
                 .as_ref()
                 .filter(|_| !response.is_json())
             {
-                response = self
-                    .hold_encrypted_agent_task_stream(response, request)
-                    .await?;
+                response = self.hold_opaque_state_stream(response, request).await?;
             }
             Ok((response, resolved_claude_api_format, outbound_model))
         } else {
@@ -3312,16 +3253,17 @@ impl RequestForwarder {
         }
     }
 
-    /// 原样转发的 Responses 请求末尾是一条带密文的子 agent 任务时（见
-    /// `opaque_state_rectifier::carries_encrypted_agent_task`），先看到第一个不是生命周期的事件
-    /// 再交出流：上游解不开密文时会在流里、输出之前回 `response.failed`，这时改成上游错误，
-    /// 回到重试循环里和 HTTP 报错一样整流或说明原因。其余情况（有输出、别的失败、到了截止
+    /// 原样转发的 Responses 请求带着上游签发的状态时（推理条目、加密片段、压缩条目，见
+    /// `opaque_state_rectifier::carries_opaque_state`），先看到第一个不是生命周期的事件
+    /// 再交出流：上游解不开密文时会先回 HTTP 200、再在输出之前回 `response.failed`（#9476：
+    /// 换了一家续接旧会话），这时改成上游错误，回到重试循环里和 HTTP 报错一样整流后重试，
+    /// 子 agent 任务解不开时说明原因。其余情况（有输出、别的失败、到了截止
     /// 时间、缓冲太多）把读过的字节原样接回去，客户端看到的流和没经过这里一样。
     ///
     /// 整个缓冲阶段只有一个截止时间（不是每读一块重新计时）：上游在输出前一直发心跳时，流
     /// 也得按时交出去。解不开密文是上游一收到请求就报的错，不用等到生成，所以最多压
     /// [`MAX_HOLD`]，首包超时更短时按首包超时。
-    async fn hold_encrypted_agent_task_stream(
+    async fn hold_opaque_state_stream(
         &self,
         response: ProxyResponse,
         request: &Value,
@@ -3356,7 +3298,7 @@ impl RequestForwarder {
             replay_chunks.push(chunk);
 
             while let Some(block) = sse.next_block() {
-                match encrypted_task_stream_start(block, request) {
+                match opaque_state_stream_start(block, request) {
                     StreamStart::Pending => {}
                     StreamStart::Commit => break 'hold,
                     StreamStart::Rejected(error) => return Err(error),
@@ -4049,7 +3991,7 @@ fn codex_anthropic_cache_config(config: &OptimizerConfig) -> OptimizerConfig {
     }
 }
 
-/// [`Forwarder::hold_encrypted_agent_task_stream`] 看到一个完整 SSE 块之后怎么做。
+/// [`Forwarder::hold_opaque_state_stream`] 看到一个完整 SSE 块之后怎么做。
 enum StreamStart {
     /// 生命周期事件（或不是 JSON），接着读。
     Pending,
@@ -4059,7 +4001,7 @@ enum StreamStart {
     Rejected(ProxyError),
 }
 
-fn encrypted_task_stream_start(block: &str, request: &Value) -> StreamStart {
+fn opaque_state_stream_start(block: &str, request: &Value) -> StreamStart {
     let mut named_event = None;
     let mut data_lines = Vec::new();
     for line in block.lines() {
@@ -4220,13 +4162,12 @@ fn rewrite_codex_responses_endpoint_to_anthropic(endpoint: &str) -> (String, Opt
     (rewritten, passthrough_query)
 }
 
+/// Only the declared type counts for Codex: a Codex provider may point a custom
+/// `base_url` at Copilot without being a managed Copilot account. Other apps also
+/// accept the resolved request URL, which `Provider::is_github_copilot` never reads.
 fn is_managed_copilot_request(app_type: &AppType, provider: &Provider, base_url: &str) -> bool {
-    provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.provider_type.as_deref())
-        == Some("github_copilot")
-        || (!matches!(app_type, AppType::Codex) && base_url.contains("githubcopilot.com"))
+    ProviderKind::declared(provider) == Some(ProviderKind::GitHubCopilot)
+        || (!matches!(app_type, AppType::Codex) && is_copilot_url(base_url))
 }
 
 fn codex_copilot_lookup_error(model_id: &str, error: CopilotAuthError) -> ProxyError {
@@ -4331,6 +4272,11 @@ fn copilot_api_format_for_model(
             .any(|endpoint| endpoint.trim_end_matches('/') == "/v1/messages")
     {
         "anthropic"
+    } else if transport_for(supported_endpoints, CodexCopilotApiFormat::OpenaiResponses).is_some()
+        && transport_for(supported_endpoints, CodexCopilotApiFormat::OpenaiChat).is_none()
+    {
+        // Copilot rejects these models on the chat endpoint (e.g. xAI grok)
+        "openai_responses"
     } else {
         "openai_chat"
     }
@@ -5168,13 +5114,13 @@ mod tests {
             rectifier_config: RectifierConfig::default(),
             optimizer_config: OptimizerConfig::default(),
             copilot_optimizer_config: CopilotOptimizerConfig::default(),
+            conversation_fingerprint_hint: None,
             non_streaming_timeout,
             streaming_first_byte_timeout,
             max_attempts: 1,
             stack_request: false,
             failover_chain: false,
             last_outbound_model: std::sync::Mutex::new(None),
-            privacy_filter: PrivacyFilterConfig::default(),
         }
     }
 
@@ -5202,37 +5148,6 @@ mod tests {
             );
         }
         assert!(!forwarder.maps_codex_failover_model(&AppType::GrokBuild, "/responses"));
-    }
-
-    /// Copilot 清洗会把孤儿 tool_result 降级成用户文本。按 forward() 用的同一组函数、同一顺序：
-    /// 客户端那一遍（子开关关闭，工具结果保留）→ 清洗 / 合并并再过滤 → 确定性请求 ID
-    /// （对已过滤正文算 SHA-256）。只差在被遮盖口令上的两个请求，ID 相同，正文里也没有口令。
-    #[test]
-    fn copilot_orphan_tool_results_are_redacted_before_the_request_id() {
-        let fwd =
-            test_forwarder(Duration::ZERO, Duration::ZERO).privacy_filter(PrivacyFilterConfig {
-                enabled: true,
-                filter_tool_results: false,
-            });
-        let id = |password: &str| {
-            let mut body = json!({
-                "metadata": { "session_id": "known-session" },
-                "messages": [
-                    { "role": "assistant", "content": [{ "type": "text", "text": "previous turn" }] },
-                    { "role": "user", "content": [
-                        { "type": "tool_result", "tool_use_id": "missing",
-                          "content": format!("password = {password}") }
-                    ]}
-                ]
-            });
-            fwd.apply_privacy_filter(&AppType::Claude, &mut body, "client");
-            // 子开关关闭：客户端那一遍不碰工具结果
-            assert!(body.to_string().contains(password), "{body}");
-            let body = fwd.copilot_rewrite_tool_results(&AppType::Claude, body);
-            assert!(!body.to_string().contains(password), "{body}");
-            super::super::copilot_optimizer::deterministic_request_id(&body, "known-session")
-        };
-        assert_eq!(id("4937"), id("4938"));
     }
 
     #[tokio::test]
@@ -6741,11 +6656,7 @@ mod tests {
         ] {
             assert!(uses_anthropic_rectifiers(Some(provider_type)));
         }
-        for provider_type in [
-            ProviderType::Codex,
-            ProviderType::OpenRouter,
-            ProviderType::CodexOAuth,
-        ] {
+        for provider_type in [ProviderType::OpenRouter, ProviderType::CodexOAuth] {
             assert!(!uses_anthropic_rectifiers(Some(provider_type)));
         }
         assert!(!uses_anthropic_rectifiers(None));
@@ -6772,6 +6683,18 @@ mod tests {
             "openai_chat"
         );
         assert_eq!(copilot_api_format_for_model(None, &messages), "openai_chat");
+        for responses_only in [["/responses"], ["/v1/responses"]] {
+            let endpoints = responses_only.map(String::from);
+            assert_eq!(
+                copilot_api_format_for_model(Some("xAI"), &endpoints),
+                "openai_responses"
+            );
+        }
+        let both = ["/v1/chat/completions", "/responses"].map(String::from);
+        assert_eq!(
+            copilot_api_format_for_model(Some("xAI"), &both),
+            "openai_chat"
+        );
     }
 
     #[test]
@@ -7358,6 +7281,23 @@ mod tests {
         ));
     }
 
+    /// 请求路径只看 providerType 和解析后的请求 URL：旧数据的 env.ANTHROPIC_BASE_URL
+    /// 让 `Provider::is_github_copilot` 为真，但这里不算。
+    #[test]
+    fn copilot_request_detection_ignores_legacy_env_url() {
+        let mut legacy = test_provider_with_type(None);
+        legacy.settings_config =
+            json!({ "env": { "ANTHROPIC_BASE_URL": "https://api.githubcopilot.com" } });
+        assert!(legacy.is_github_copilot());
+        for app_type in [AppType::Claude, AppType::Codex] {
+            assert!(!is_managed_copilot_request(
+                &app_type,
+                &legacy,
+                "https://relay.example.com"
+            ));
+        }
+    }
+
     /// 验证动态 endpoint 替换条件
     #[test]
     fn dynamic_endpoint_replacement_conditions() {
@@ -7800,152 +7740,6 @@ mod tests {
                 .map_err(|error| error.error)
                 .expect("forward");
             upstream.seen.lock().await.pop().expect("upstream request")
-        }
-
-        /// 隐私过滤在转发器出口执行：转换成哪种上游格式都过滤，CC Switch 自己包装的
-        /// 压缩摘要也过滤；工具结果仍跟随子开关。工具定义的说明文字不碰（Claude Code 的
-        /// Bash 工具说明里有 `noreply@anthropic.com`，模型会照抄进提交信息）。
-        #[tokio::test]
-        async fn privacy_filter_runs_on_the_final_upstream_body() {
-            const SECRET: &str = "Hunter2xyz";
-            let upstream = upstream().await;
-            let request = json!({
-                "model": "listed",
-                "input": [
-                    { "role": "user", "content": [
-                        { "type": "input_text", "text": format!("我的密码是 {SECRET}") }
-                    ]},
-                    { "type": "compaction", "encrypted_content":
-                        crate::proxy::providers::codex_compaction::encode_compaction_summary(
-                            &format!("earlier: password = {SECRET}")
-                        ) },
-                    { "type": "function_call", "call_id": "c1", "name": "lookup", "arguments": "{}" },
-                    { "type": "function_call_output", "call_id": "c1",
-                      "output": format!("password: {SECRET}") }
-                ],
-                "tools": [{
-                    "type": "function",
-                    "name": "lookup",
-                    "description": "Co-Authored-By: Claude <noreply@anthropic.com>",
-                    "parameters": { "type": "object", "properties": {} }
-                }],
-                "stream": false
-            });
-            let config = |filter_tool_results| PrivacyFilterConfig {
-                enabled: true,
-                filter_tool_results,
-            };
-            for api_format in ["openai_responses", "openai_chat", "anthropic"] {
-                // 总开关打开、子开关关闭：只剩工具结果里的原文
-                let seen = send(
-                    &forwarder(false).privacy_filter(config(false)),
-                    &upstream,
-                    provider(&upstream, api_format),
-                    "/responses",
-                    request.clone(),
-                )
-                .await;
-                let sent = seen.body.to_string();
-                let decoded = decoded_compaction_summaries(&seen.body).join("\n");
-                assert_eq!(
-                    format!("{sent}{decoded}").matches(SECRET).count(),
-                    1,
-                    "{api_format}: only the tool result keeps the secret: {sent} {decoded}"
-                );
-                assert!(
-                    sent.contains(&format!("password: {SECRET}")),
-                    "{api_format}: {sent}"
-                );
-                assert!(
-                    sent.contains("<noreply@anthropic.com>"),
-                    "{api_format}: tool descriptions are left alone: {sent}"
-                );
-
-                // 子开关打开：一处都不剩
-                let seen = send(
-                    &forwarder(false).privacy_filter(config(true)),
-                    &upstream,
-                    provider(&upstream, api_format),
-                    "/responses",
-                    request.clone(),
-                )
-                .await;
-                let sent = seen.body.to_string();
-                let decoded = decoded_compaction_summaries(&seen.body).join("\n");
-                assert!(!sent.contains(SECRET), "{api_format}: {sent}");
-                assert!(!decoded.contains(SECRET), "{api_format}: {decoded}");
-                assert!(
-                    sent.contains("<noreply@anthropic.com>"),
-                    "{api_format}: {sent}"
-                );
-            }
-
-            // 开关关闭：三处原文都到了上游。第三方原生 Responses 收到的压缩摘要已被展开成
-            // 明文用户消息（`scrub_ccswitch_state_for_official` 之前的转换），
-            // 这正是旧版在 handler 入口过滤时漏掉的内容。
-            let seen = send(
-                &forwarder(false),
-                &upstream,
-                provider(&upstream, "openai_responses"),
-                "/responses",
-                request.clone(),
-            )
-            .await;
-            let sent = seen.body.to_string();
-            let decoded = decoded_compaction_summaries(&seen.body).join("\n");
-            assert_eq!(
-                format!("{sent}{decoded}").matches(SECRET).count(),
-                3,
-                "{sent}"
-            );
-        }
-
-        /// 供应商配置的本地 body 覆写在出口之前合并，覆写进去的内容同样要过滤
-        #[tokio::test]
-        async fn privacy_filter_covers_local_body_overrides() {
-            let upstream = upstream().await;
-            for api_format in ["openai_responses", "openai_chat", "anthropic"] {
-                let mut provider = provider(&upstream, api_format);
-                provider
-                    .meta
-                    .as_mut()
-                    .unwrap()
-                    .local_proxy_request_overrides =
-                    Some(crate::provider::LocalProxyRequestOverrides {
-                        headers: Default::default(),
-                        body: Some(json!({ "instructions": "我的密码是 Hunter2xyz" })),
-                    });
-                let seen = send(
-                    &forwarder(false).privacy_filter(PrivacyFilterConfig {
-                        enabled: true,
-                        filter_tool_results: false,
-                    }),
-                    &upstream,
-                    provider,
-                    "/responses",
-                    body("listed", json!([])),
-                )
-                .await;
-                let sent = seen.body.to_string();
-                assert!(!sent.contains("Hunter2xyz"), "{api_format}: {sent}");
-                // 占位符跟随系统语言，只断言结构
-                let instructions = seen.body["instructions"].as_str().unwrap_or_default();
-                assert!(
-                    instructions.starts_with("我的密码是 ["),
-                    "{api_format}: {sent}"
-                );
-            }
-        }
-
-        /// 请求体里 CC Switch 包装的压缩摘要解开后的正文
-        fn decoded_compaction_summaries(body: &Value) -> Vec<String> {
-            body["input"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|item| item["encrypted_content"].as_str())
-                .filter_map(crate::proxy::providers::codex_compaction::decode_compaction_summary)
-                .collect()
         }
 
         #[tokio::test]
@@ -9171,6 +8965,62 @@ mod tests {
             assert_eq!(task_ciphertext(&seen[1]), "gAAAAB-task-from-main");
         }
 
+        /// 普通会话换了一家续接（#9476）：历史里有别家签发的推理和函数输出密文，上游先回 200、
+        /// 再在输出前说解不开。压住流改成上游错误，整流后对同一家重试一次，不把失败流交给
+        /// Codex（它会拿同一段历史重连到底）。
+        #[tokio::test]
+        async fn resumed_thread_rejected_in_stream_is_rectified_and_retried() {
+            let request = json!({
+                "model": "listed",
+                "stream": true,
+                "input": [
+                    { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] },
+                    { "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAAA-provider-a" },
+                    { "type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}" },
+                    { "type": "function_call_output", "call_id": "call_1", "output": [
+                        { "type": "input_text", "text": "ok" },
+                        { "type": "encrypted_content", "encrypted_content": "enc-provider-a" }
+                    ] },
+                    { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "again" }] }
+                ]
+            });
+            // 中转转述时加了自己的前缀，照样认。
+            let relayed = format!("OpenAI Responses bad request: {ENCRYPTED_TASK_REJECTION}");
+            let upstream = raw_upstream(vec![failed_stream(&relayed), completed_stream()]).await;
+            let result = forward_sub_agent(&upstream, request)
+                .await
+                .map_err(|error| error.error)
+                .expect("retried");
+            assert!(body_text(result).await.contains("response.completed"));
+
+            let seen = upstream.seen.lock().await;
+            assert_eq!(seen.len(), 2);
+            assert!(carries_reasoning(&seen[0]));
+            assert!(!carries_reasoning(&seen[1]));
+            let output = &seen[1].body["input"][2]["output"];
+            assert_eq!(output[0]["text"], "ok");
+            assert_eq!(output[1]["type"], "input_text");
+        }
+
+        /// 请求里没有别家签发的状态（新会话）：不压流，失败流原样交给客户端，只发一次。
+        #[tokio::test]
+        async fn fresh_thread_streams_are_not_held() {
+            let request = json!({
+                "model": "listed",
+                "stream": true,
+                "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }]
+            });
+            let step = failed_stream(ENCRYPTED_TASK_REJECTION);
+            let expected = step.2.clone();
+            let upstream = raw_upstream(vec![step]).await;
+            let result = forward_sub_agent(&upstream, request)
+                .await
+                .map_err(|error| error.error)
+                .expect("committed");
+            assert_eq!(body_text(result).await, expected);
+            assert_eq!(upstream.seen.lock().await.len(), 1);
+        }
+
         /// HTTP 报错同样处理。
         #[tokio::test]
         async fn sub_agent_task_rejected_over_http_returns_an_explanation() {
@@ -9529,94 +9379,6 @@ mod tests {
             );
             assert_eq!(breaker(&fwd, "p1").await, Some((1, 1)));
             assert_eq!(breaker(&fwd, "p2").await, Some((1, 0)));
-        }
-
-        /// 原生 Anthropic 供应商走 hyper 发送；第一家 500 后换第二家重发，两次发送都经过过滤，
-        /// 第二家的本地 body 覆写注入的内容也过滤。工具结果跟随子开关（关闭）原样保留。
-        #[tokio::test]
-        async fn privacy_filter_runs_on_every_attempt_over_hyper() {
-            let up1 = upstream(vec![error(500, "boom")]).await;
-            let up2 = upstream(vec![ok()]).await;
-            let first_provider = provider("p1", &up1);
-            for format in [None, Some("anthropic")] {
-                assert!(should_preserve_exact_header_case(
-                    "Claude",
-                    &first_provider,
-                    format,
-                    false
-                ));
-            }
-            let mut second_provider = provider("p2", &up2);
-            second_provider.meta = Some(crate::provider::ProviderMeta {
-                local_proxy_request_overrides: Some(crate::provider::LocalProxyRequestOverrides {
-                    headers: Default::default(),
-                    body: Some(json!({ "system": "我的密码是 Hunter2xyz" })),
-                }),
-                ..Default::default()
-            });
-            let fwd = forwarder(2, "p1").privacy_filter(PrivacyFilterConfig {
-                enabled: true,
-                filter_tool_results: false,
-            });
-            let body = json!({
-                "model": "claude-sonnet-4-5",
-                "max_tokens": 1000,
-                "messages": [
-                    { "role": "user", "content": "邮箱 alice@example.com" },
-                    { "role": "assistant", "content": [
-                        { "type": "tool_use", "id": "t1", "name": "read", "input": {} }
-                    ]},
-                    { "role": "user", "content": [
-                        { "type": "tool_result", "tool_use_id": "t1", "content": "password: Hunter2xyz" },
-                        { "type": "text", "text": "password = Qwer1234" }
-                    ]}
-                ]
-            });
-
-            let result = send(&fwd, vec![first_provider, second_provider], body).await;
-            assert_eq!(result.ok().map(|r| r.provider.id), Some("p2".into()));
-
-            assert_eq!(up1.requests.lock().await.len(), 1);
-            assert_eq!(up2.requests.lock().await.len(), 1);
-            let first = up1.requests.lock().await.pop().expect("first attempt");
-            let second = up2.requests.lock().await.pop().expect("second attempt");
-            for (attempt, sent) in [("p1", &first), ("p2", &second)] {
-                let text = sent.to_string();
-                assert!(!text.contains("alice@example.com"), "{attempt}: {text}");
-                assert!(!text.contains("Qwer1234"), "{attempt}: {text}");
-                assert!(
-                    sent["messages"][0].to_string().contains("邮箱 ["),
-                    "{attempt}: {text}"
-                );
-                assert_eq!(
-                    sent["messages"].as_array().map(Vec::len),
-                    Some(3),
-                    "{attempt}"
-                );
-                assert_eq!(sent["messages"][1]["content"][0]["id"], "t1", "{attempt}");
-                assert_eq!(
-                    sent["messages"][2]["content"][0]["tool_use_id"], "t1",
-                    "{attempt}"
-                );
-                let user_text = &sent["messages"][2]["content"][1];
-                assert_eq!(user_text["type"], "text", "{attempt}: {text}");
-                assert!(
-                    user_text["text"]
-                        .as_str()
-                        .is_some_and(|t| t.starts_with("password = [")),
-                    "{attempt}: {text}"
-                );
-                assert!(
-                    sent["messages"][2]["content"][0]
-                        .to_string()
-                        .contains("password: Hunter2xyz"),
-                    "{attempt}: tool result should be kept: {text}"
-                );
-            }
-            assert!(first.get("system").is_none(), "{first}");
-            let system = second["system"].to_string();
-            assert!(system.contains("我的密码是 ["), "{system}");
-            assert!(!system.contains("Hunter2xyz"), "{system}");
         }
 
         #[tokio::test]

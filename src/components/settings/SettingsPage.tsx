@@ -15,6 +15,7 @@ import {
   Info,
   Loader2,
   Route,
+  ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
 import { toast } from "@/lib/toast";
@@ -37,11 +38,12 @@ import { BackupListSection } from "@/components/settings/BackupListSection";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { RoutingSection } from "@/components/settings/sections/RoutingSection";
-import { PrivacyFilterConfigPanel } from "@/components/settings/PrivacyFilterConfigPanel";
 import { GlobalProxySettings } from "@/components/settings/GlobalProxySettings";
+import { IpDiagnostics } from "@/components/settings/IpDiagnostics";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
 import { GeneralSection } from "@/components/settings/sections/GeneralSection";
 import { AppConfigSection } from "@/components/settings/sections/AppConfigSection";
+import { PrivacySection } from "@/components/settings/sections/PrivacySection";
 import {
   SettingsBlock,
   SettingsBody,
@@ -61,6 +63,7 @@ const SECTION_ICON: Record<
   appConfig: Folder,
   routing: Route,
   network: Globe,
+  privacy: ShieldCheck,
   data: Database,
   about: Info,
 };
@@ -394,17 +397,24 @@ export function SettingsPage({
         return <RoutingSection onOpenApp={onOpenApp} />;
       case "network":
         return (
-          <SettingsBlock
-            title={t("settings.advanced.globalProxy.title")}
-            help={{
-              title: t("settings.advanced.globalProxy.title"),
-              body: t("settings.advanced.globalProxy.description"),
-            }}
-          >
-            <div className="rounded-panel border border-border bg-surface p-5">
-              <GlobalProxySettings />
-            </div>
-          </SettingsBlock>
+          <>
+            <SettingsBlock
+              title={t("settings.advanced.globalProxy.title")}
+              help={{
+                title: t("settings.advanced.globalProxy.title"),
+                body: t("settings.advanced.globalProxy.description"),
+              }}
+            >
+              <div className="rounded-panel border border-border bg-surface p-5">
+                <GlobalProxySettings />
+              </div>
+            </SettingsBlock>
+            <IpDiagnostics />
+          </>
+        );
+      case "privacy":
+        return (
+          <PrivacySection settings={settings} onAutoSave={handleAutoSave} />
         );
       case "data":
         return (
@@ -498,15 +508,6 @@ export function SettingsPage({
                   onAutoSave={handleAutoSave}
                 />
               </div>
-            </SettingsBlock>
-            <SettingsBlock
-              title={t("settings.advanced.privacyFilter.title")}
-              help={{
-                title: t("settings.advanced.privacyFilter.title"),
-                body: t("settings.advanced.privacyFilter.description"),
-              }}
-            >
-              <PrivacyFilterConfigPanel />
             </SettingsBlock>
             <SettingsBlock
               title={t("settings.advanced.logConfig.title")}

@@ -4,6 +4,7 @@ import type {
   WebDavSyncSettings,
   S3SyncSettings,
   RemoteSnapshotInfo,
+  RedactModelStatus,
 } from "@/types";
 import type { AppId } from "./types";
 
@@ -75,6 +76,32 @@ export const settingsApi = {
 
   async isPortable(): Promise<boolean> {
     return await invoke("is_portable_mode");
+  },
+
+  /** 用当前脱敏配置预览一段文本（总是按已开启处理）。 */
+  async previewRedaction(text: string): Promise<{
+    masked: string;
+    hits: number;
+    placeholders: number;
+    errors: string[];
+    usedModel: boolean;
+  }> {
+    return await invoke("preview_redaction", { text });
+  },
+
+  /** 本地脱敏模型的下载/安装状态。 */
+  async getRedactModelStatus(): Promise<RedactModelStatus> {
+    return await invoke("redact_model_status");
+  },
+
+  /** 后台下载本地模型与运行时，进度通过状态接口轮询。 */
+  async downloadRedactModel(): Promise<void> {
+    await invoke("download_redact_model");
+  },
+
+  /** 删除已下载的本地模型。 */
+  async deleteRedactModel(): Promise<void> {
+    await invoke("delete_redact_model");
   },
 
   async getConfigDir(appId: AppId): Promise<string> {
@@ -339,14 +366,6 @@ export const settingsApi = {
     return await invoke("set_optimizer_config", { config });
   },
 
-  async getPrivacyFilterConfig(): Promise<PrivacyFilterConfig> {
-    return await invoke("get_privacy_filter_config");
-  },
-
-  async setPrivacyFilterConfig(config: PrivacyFilterConfig): Promise<boolean> {
-    return await invoke("set_privacy_filter_config", { config });
-  },
-
   async getLogConfig(): Promise<LogConfig> {
     return await invoke("get_log_config");
   },
@@ -413,11 +432,6 @@ export interface OptimizerConfig {
   enabled: boolean;
   thinkingOptimizer: boolean;
   cacheInjection: boolean;
-}
-
-export interface PrivacyFilterConfig {
-  enabled: boolean;
-  filterToolResults: boolean;
 }
 
 export interface LogConfig {

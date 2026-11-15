@@ -42,11 +42,14 @@ mod pi_config;
 mod prompt;
 mod prompt_files;
 mod provider;
+mod provider_kind;
 mod proxy;
+pub mod redact;
 mod services;
 mod session_manager;
 mod settings;
 mod store;
+mod sync_utils;
 
 mod tray;
 #[cfg(target_os = "windows")]
@@ -485,6 +488,16 @@ fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
 pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 <app_config_dir>/crash.log（默认 ~/.cc-switch/crash.log）
     panic_hook::setup_panic_hook();
+
+    // 脱敏规则首次使用要编译两百多条正则，本地模型首次推理要加载约 60 MB。
+    // 设置里已经开启时提前在后台预热，避免应用重启后的第一个代理请求承担这部分
+    // 耗时；反过来，模型关闭时 prepare 也会把已加载的实例释放掉。
+    if let Some(config) = crate::settings::get_settings()
+        .redact
+        .filter(|config| config.enabled)
+    {
+        std::thread::spawn(move || crate::redact::prepare(&config));
+    }
 
     let mut builder = tauri::Builder::default();
 
@@ -1636,13 +1649,15 @@ pub fn run() {
             commands::set_rectifier_config,
             commands::get_optimizer_config,
             commands::set_optimizer_config,
-            commands::get_privacy_filter_config,
-            commands::set_privacy_filter_config,
             commands::get_copilot_optimizer_config,
             commands::set_copilot_optimizer_config,
             commands::get_log_config,
             commands::set_log_config,
             commands::restart_app,
+            commands::preview_redaction,
+            commands::redact_model_status,
+            commands::download_redact_model,
+            commands::delete_redact_model,
             commands::is_portable_mode,
             commands::copy_text_to_clipboard,
             commands::get_claude_plugin_status,
@@ -1946,6 +1961,7 @@ pub fn run() {
             commands::test_proxy_url,
             commands::get_upstream_proxy_status,
             commands::scan_local_proxies,
+            commands::diagnose_ip,
             // Window theme control
             commands::set_window_theme,
             // Generic managed auth commands

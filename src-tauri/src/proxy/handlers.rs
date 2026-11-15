@@ -48,12 +48,127 @@ use super::{
 };
 use crate::app_config::AppType;
 use crate::database::PRICING_SOURCE_REQUEST;
+use crate::provider_kind::ProviderKind;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
 use futures::StreamExt;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
+
+/// 对请求体应用脱敏，并把占位符映射记录到上下文。
+///
+/// `failClosed` 开启且配置不可用时返回错误，调用方应中止请求、不把原文发给上游。
+async fn apply_request_redaction(
+    body: &mut Value,
+    ctx: &mut RequestContext,
+) -> Result<(), ProxyError> {
+    let config = crate::settings::redact_config();
+    if !config.enabled {
+        return Ok(());
+    }
+
+    // 指纹必须在改写请求体之前计算：占位符若退化为每次请求随机，指纹就会每轮不同。
+    // 只有开启脱敏时才计算，未开启的请求没有额外开销。
+    if ctx.conversation_fingerprint.is_none() {
+        ctx.conversation_fingerprint = crate::proxy::forwarder::conversation_fingerprint(body);
+    }
+
+    // 规则扫描和本地模型推理都是 CPU 密集操作，统一放到阻塞线程里执行，
+    // 避免占住异步运行时。请求体直接移入任务，不再整包 clone：带图片的请求
+    // 可能有几十 MB，复制会让峰值内存翻倍。
+    let mut owned = std::mem::take(body);
+    let (masked, result) = tokio::task::spawn_blocking(move || {
+        let result = crate::redact::proxy::mask_request_body(&mut owned, &config);
+        (owned, result)
+    })
+    .await
+    .map_err(|error| ProxyError::Internal(format!("脱敏任务失败：{error}")))?;
+
+    *body = masked;
+    match result {
+        Ok(Some(table)) => {
+            ctx.redaction = Some(table);
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(message) => Err(ProxyError::Internal(message)),
+    }
+}
+
+/// 还原转换分支写回客户端的占位符。
+///
+/// Claude / Codex 的格式转换分支不经过 `process_response`，需要在这里统一还原：
+/// SSE 按块还原并处理跨块占位符，其余响应整体还原后重建实体头。
+async fn restore_transformed_response(
+    response: axum::response::Response,
+    ctx: &RequestContext,
+) -> Result<axum::response::Response, ProxyError> {
+    let Some(table) = ctx.redaction.clone() else {
+        return Ok(response);
+    };
+    if table.is_empty() {
+        return Ok(response);
+    }
+
+    let (mut parts, body) = response.into_parts();
+    let is_stream = parts
+        .headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
+
+    if !is_stream {
+        let bytes = body
+            .collect()
+            .await
+            .map_err(|error| ProxyError::Internal(format!("读取响应体失败：{error}")))?
+            .to_bytes();
+        let restored = crate::redact::proxy::restore_response_body(&bytes, &table)
+            .unwrap_or_else(|| bytes.to_vec());
+        strip_entity_headers_for_rebuilt_body(&mut parts.headers);
+        return Ok(axum::response::Response::from_parts(
+            parts,
+            axum::body::Body::from(restored),
+        ));
+    }
+
+    // 还原会改变字节数，流式响应不能沿用上游的 Content-Length。
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    let mut data = body.into_data_stream();
+    let stream = async_stream::stream! {
+        let mut pending: Vec<u8> = Vec::new();
+        while let Some(chunk) = data.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    let restored = crate::redact::proxy::restore_stream_chunk(
+                        &table,
+                        &mut pending,
+                        &bytes,
+                    );
+                    if !restored.is_empty() {
+                        yield Ok::<Bytes, axum::Error>(Bytes::from(restored));
+                    }
+                }
+                Err(error) => {
+                    yield Err(error);
+                    break;
+                }
+            }
+        }
+        if let Some(tail) = crate::redact::proxy::flush_stream_restore(&table, &mut pending) {
+            if !tail.is_empty() {
+                yield Ok(Bytes::from(tail));
+            }
+        }
+    };
+
+    strip_entity_headers_for_rebuilt_body(&mut parts.headers);
+    Ok(axum::response::Response::from_parts(
+        parts,
+        axum::body::Body::from_stream(stream),
+    ))
+}
 
 // ============================================================================
 // 健康检查和状态查询（简单端点）
@@ -365,6 +480,8 @@ async fn handle_messages_for_app(
         stack,
     )
     .await?;
+    // 请求体在最终发送前脱敏；占位符映射随 ctx 交给响应处理还原。
+    apply_request_redaction(&mut body, &mut ctx).await?;
 
     let raw_endpoint = uri
         .path_and_query()
@@ -429,7 +546,7 @@ async fn handle_messages_for_app(
 
     // Claude 特有：格式转换处理
     if needs_transform {
-        return handle_claude_transform(
+        let response = handle_claude_transform(
             response,
             &ctx,
             &state,
@@ -438,7 +555,8 @@ async fn handle_messages_for_app(
             &api_format,
             connection_guard,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     drop(body);
@@ -629,12 +747,7 @@ async fn handle_claude_transform(
     connection_guard: Option<ActiveConnectionGuard>,
 ) -> Result<axum::response::Response, ProxyError> {
     let status = response.status();
-    let is_codex_oauth = ctx
-        .provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.provider_type.as_deref())
-        == Some("codex_oauth");
+    let is_codex_oauth = ProviderKind::declared(&ctx.provider) == Some(ProviderKind::CodexOAuth);
     // Claude 的模型验证要求非流式 JSON，并直接读取 usage.input_tokens。
     // Chat/Responses 上游即使强制返回 SSE，也必须聚合后再交给非流客户端。
     // Codex OAuth 强制 SSE，但可能不标 Content-Type，保留这个额外识别条件。
@@ -1026,6 +1139,7 @@ pub async fn handle_chat_completions(
         stack,
     )
     .await?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
 
     let is_stream = body
@@ -1148,6 +1262,7 @@ async fn handle_responses_for_app(
         stack,
     )
     .await?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
     let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body
@@ -1193,7 +1308,7 @@ async fn handle_responses_for_app(
     let response = result.response;
 
     if codex_upstream_format == Some(CodexUpstreamFormat::Anthropic) {
-        return handle_codex_anthropic_to_responses_transform(
+        let response = handle_codex_anthropic_to_responses_transform(
             response,
             &ctx,
             &state,
@@ -1201,11 +1316,12 @@ async fn handle_responses_for_app(
             connection_guard,
             codex_tool_context,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if codex_upstream_format == Some(CodexUpstreamFormat::ChatCompletions) {
-        return handle_codex_chat_to_responses_transform(
+        let response = handle_codex_chat_to_responses_transform(
             response,
             &ctx,
             &state,
@@ -1213,7 +1329,8 @@ async fn handle_responses_for_app(
             connection_guard,
             codex_tool_context,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     // 原生 Responses 第三方的压缩回合：上游只会回普通消息，补上 Codex 要的那个
@@ -1223,8 +1340,10 @@ async fn handle_responses_for_app(
         && matches!(app_type, AppType::Codex)
         && !super::providers::is_codex_official_provider(&ctx.provider)
     {
-        return handle_codex_native_compaction_response(response, &ctx, &state, connection_guard)
-            .await;
+        let response =
+            handle_codex_native_compaction_response(response, &ctx, &state, connection_guard)
+                .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     // Native Responses passthrough to a strict gateway (xAI): restore flattened
@@ -1234,25 +1353,22 @@ async fn handle_responses_for_app(
         &ctx.provider,
         ctx.outbound_model.as_deref(),
     ) {
-        return handle_codex_xai_native_responses_rewrite(
+        let response = handle_codex_xai_native_responses_rewrite(
             response,
             &ctx,
             &state,
             connection_guard,
             namespace_restore_map,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if super::providers::provider_needs_responses_late_arguments_repair(&ctx.provider) {
-        return handle_codex_late_arguments_repair(
-            response,
-            &ctx,
-            &state,
-            is_stream,
-            connection_guard,
-        )
-        .await;
+        let response =
+            handle_codex_late_arguments_repair(response, &ctx, &state, is_stream, connection_guard)
+                .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     process_response(
@@ -1289,12 +1405,7 @@ fn codex_native_responses_stream(
 ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
     let stream = response.bytes_stream();
     if matches!(ctx.app_type, AppType::Codex)
-        && ctx
-            .provider
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.provider_type.as_deref())
-            == Some("github_copilot")
+        && ProviderKind::declared(&ctx.provider) == Some(ProviderKind::GitHubCopilot)
     {
         Box::pin(super::providers::copilot_responses::create_stable_item_id_stream(stream))
     } else {
@@ -1402,7 +1513,7 @@ async fn handle_codex_standalone_passthrough(
         .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
         .to_bytes();
     let body_bytes = decode_codex_request_body(&mut headers, body_bytes)?;
-    let body: Value = serde_json::from_slice(&body_bytes)
+    let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::InvalidRequest(format!("Failed to parse request body: {e}")))?;
     drop(body_bytes);
 
@@ -1416,6 +1527,7 @@ async fn handle_codex_standalone_passthrough(
         None,
     )
     .await?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
     let endpoint = endpoint_with_query(&uri, canonical_endpoint);
 
     let forwarder = ctx.create_forwarder(&state);
@@ -1509,6 +1621,7 @@ async fn handle_responses_compact_for_app(
         stack,
     )
     .await?;
+    apply_request_redaction(&mut body, &mut ctx).await?;
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
 
     let is_stream = body
@@ -1550,7 +1663,7 @@ async fn handle_responses_compact_for_app(
     let response = result.response;
 
     if codex_upstream_format == Some(CodexUpstreamFormat::Anthropic) {
-        return handle_codex_anthropic_to_responses_transform(
+        let response = handle_codex_anthropic_to_responses_transform(
             response,
             &ctx,
             &state,
@@ -1558,11 +1671,12 @@ async fn handle_responses_compact_for_app(
             connection_guard,
             codex_tool_context,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if codex_upstream_format == Some(CodexUpstreamFormat::ChatCompletions) {
-        return handle_codex_chat_to_responses_transform(
+        let response = handle_codex_chat_to_responses_transform(
             response,
             &ctx,
             &state,
@@ -1570,32 +1684,30 @@ async fn handle_responses_compact_for_app(
             connection_guard,
             codex_tool_context,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if super::providers::provider_needs_responses_namespace_flatten(
         &ctx.provider,
         ctx.outbound_model.as_deref(),
     ) {
-        return handle_codex_xai_native_responses_rewrite(
+        let response = handle_codex_xai_native_responses_rewrite(
             response,
             &ctx,
             &state,
             connection_guard,
             namespace_restore_map,
         )
-        .await;
+        .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     if super::providers::provider_needs_responses_late_arguments_repair(&ctx.provider) {
-        return handle_codex_late_arguments_repair(
-            response,
-            &ctx,
-            &state,
-            is_stream,
-            connection_guard,
-        )
-        .await;
+        let response =
+            handle_codex_late_arguments_repair(response, &ctx, &state, is_stream, connection_guard)
+                .await?;
+        return restore_transformed_response(response, &ctx).await;
     }
 
     process_response(
@@ -2650,7 +2762,7 @@ pub async fn handle_gemini(
         .to_bytes();
     // GET 类只读端点（/v1beta/models、/v1beta/models/<model> 等）没有请求体，
     // 不能强制 parse 为 JSON —— 否则空 body 会被拒绝。
-    let body: Value = if body_bytes.is_empty() {
+    let mut body: Value = if body_bytes.is_empty() {
         Value::Null
     } else {
         serde_json::from_slice(&body_bytes)
@@ -2671,6 +2783,7 @@ pub async fn handle_gemini(
     )
     .await?
     .with_model_from_uri(&uri);
+    apply_request_redaction(&mut body, &mut ctx).await?;
 
     // 提取完整的路径和查询参数
     let endpoint = uri
