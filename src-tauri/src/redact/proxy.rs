@@ -513,7 +513,7 @@ mod tests {
 
         let mut pending = Vec::new();
         let mut chunk = placeholder.clone().into_bytes();
-        chunk.extend(std::iter::repeat(b'x').take(MAX_PENDING_BYTES + 1));
+        chunk.resize(chunk.len() + MAX_PENDING_BYTES + 1, b'x');
 
         let out = restore_stream_chunk(&table, &mut pending, &chunk);
 

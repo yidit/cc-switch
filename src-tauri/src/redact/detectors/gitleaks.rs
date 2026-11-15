@@ -607,6 +607,7 @@ impl SecretRules {
                     || is_template_var(cand)
                     || is_benign_id(cand)
                     || is_likely_placeholder(cand)
+                    || is_documented_example(cand)
                 {
                     continue;
                 }
@@ -622,7 +623,7 @@ impl SecretRules {
             // 函数调用当成口令（`api_key = String::from(...)` 等）。
             if is_template_var(value)
                 || is_context_placeholder(value)
-                || !super::secret::is_plausible_secret_value(value)
+                || !super::secret::is_plausible_prose_secret(value)
             {
                 continue;
             }
@@ -646,6 +647,7 @@ impl SecretRules {
                 || is_hex_hash(cand)
                 || is_uuid(cand)
                 || is_business_id_assignment(whole.as_str())
+                || is_ssh_public_key(cand)
             {
                 continue;
             }
@@ -685,6 +687,26 @@ fn is_likely_placeholder(s: &str) -> bool {
 fn is_benign_id(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     BENIGN_ID_PREFIXES.iter().any(|p| lower.starts_with(p))
+}
+
+/// 云厂商文档里的固定示例凭据（AWS 官方示例访问键），脱敏只会破坏正文。
+fn is_documented_example(cand: &str) -> bool {
+    cand == "AKIAIOSFODNN7EXAMPLE"
+}
+
+/// SSH 公钥的 base64 主体：熵很高，但公钥不是秘密。
+///
+/// OpenSSH 公钥 blob 以算法名开头，base64 编码后前缀固定，据此排除。
+fn is_ssh_public_key(cand: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "AAAAC3NzaC1lZDI1NTE5",            // ssh-ed25519
+        "AAAAB3NzaC1yc2E",                 // ssh-rsa
+        "AAAAB3NzaC1kc3M",                 // ssh-dss
+        "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY", // ecdsa-sha2-nistp256
+        "AAAAE2VjZHNhLXNoYTItbmlzdHAzODQ", // ecdsa-sha2-nistp384
+        "AAAAE2VjZHNhLXNoYTItbmlzdHA1MjE", // ecdsa-sha2-nistp521
+    ];
+    PREFIXES.iter().any(|prefix| cand.starts_with(prefix))
 }
 
 /// 上下文口令的 value 是否只是占位。先去掉两端标点，让 `string,` / `&str` / `string[]` 也能对上词表。
@@ -833,6 +855,22 @@ mod tests {
             .into_iter()
             .map(|hit| &text[hit.start..hit.end])
             .collect()
+    }
+
+    #[test]
+    fn public_keys_and_documented_examples_are_not_secrets() {
+        let ssh = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl deploy@host";
+        assert!(find(ssh).is_empty(), "SSH 公钥不应被脱敏：{:?}", find(ssh));
+
+        let aws = "The AWS docs use AKIAIOSFODNN7EXAMPLE as the sample key.";
+        assert!(
+            find(aws).is_empty(),
+            "文档示例键不应被脱敏：{:?}",
+            find(aws)
+        );
+
+        // 真实形态的密钥仍然要命中。
+        assert!(!find("token sk-proj-AbC123xYz456QwE789RtY012UiO345").is_empty());
     }
 
     #[test]

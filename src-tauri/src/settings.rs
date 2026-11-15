@@ -1181,6 +1181,36 @@ pub fn redact_config() -> crate::redact::RedactConfig {
     read_settings().redact.clone().unwrap_or_default()
 }
 
+/// 启动时读取脱敏配置，并在盐值缺失时补一个写回设置。
+///
+/// 占位符后缀由「盐值 + 类型 + 原值」决定：没有盐值时每次请求都会重新随机，
+/// 上游的提示缓存每轮都会失效。旧版本保存的配置可能没有盐值，启动时补一次
+/// 即可长期稳定。
+pub fn redact_config_with_salt() -> crate::redact::RedactConfig {
+    let config = read_settings().redact.clone().unwrap_or_default();
+    if config.salt.is_some() || !config.enabled {
+        return config;
+    }
+
+    let generated = uuid::Uuid::new_v4().simple().to_string();
+    let salt = generated.clone();
+    if let Err(error) = mutate_settings(|settings| {
+        if let Some(redact) = settings.redact.as_mut() {
+            if redact.salt.is_none() {
+                redact.salt = Some(salt);
+            }
+        }
+    }) {
+        log::warn!("补齐脱敏盐值失败，本次仍使用随机占位符：{error}");
+        return config;
+    }
+
+    crate::redact::RedactConfig {
+        salt: Some(generated),
+        ..config
+    }
+}
+
 pub fn get_settings_for_frontend() -> AppSettings {
     let mut settings = get_settings();
     if let Some(sync) = &mut settings.webdav_sync {

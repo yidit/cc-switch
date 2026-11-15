@@ -1,0 +1,465 @@
+{
+  "version": 1,
+  "note": "误判专测语料：全部为虚构数据。keep 中的值必须在脱敏后逐字保留，且整段文本不得产生任何占位符。",
+  "cases": [
+    {
+      "id": "sha1-commit",
+      "category": "secret-lookalike",
+      "text": "commit da39a3ee5e6b4b0d3255bfef95601890afd80709",
+      "keep": ["da39a3ee5e6b4b0d3255bfef95601890afd80709"],
+      "reason": "40 位十六进制是 Git 提交哈希，不是凭据"
+    },
+    {
+      "id": "sha256-digest",
+      "category": "secret-lookalike",
+      "text": "digest 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "keep": ["9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"],
+      "reason": "64 位十六进制是内容摘要"
+    },
+    {
+      "id": "md5-etag",
+      "category": "secret-lookalike",
+      "text": "ETag: 098f6bcd4621d373cade4e832627b4f6",
+      "keep": ["098f6bcd4621d373cade4e832627b4f6"],
+      "reason": "32 位十六进制是缓存标记"
+    },
+    {
+      "id": "uuid-request-id",
+      "category": "secret-lookalike",
+      "text": "request_id 550e8400-e29b-41d4-a716-446655440000",
+      "keep": ["550e8400-e29b-41d4-a716-446655440000"],
+      "reason": "UUID 是请求标识"
+    },
+    {
+      "id": "hex-color",
+      "category": "secret-lookalike",
+      "text": "background: #ff8800; color: #1a2b3c;",
+      "keep": ["#ff8800", "#1a2b3c"],
+      "reason": "十六进制颜色值"
+    },
+    {
+      "id": "short-base64",
+      "category": "secret-lookalike",
+      "text": "payload dGVzdA== is not a token",
+      "keep": ["dGVzdA=="],
+      "reason": "短 base64 是编码文本"
+    },
+    {
+      "id": "bearer-variable",
+      "category": "secret-lookalike",
+      "text": "curl -H 'Authorization: Bearer $TOKEN' https://api.acme.example/v1",
+      "keep": ["$TOKEN"],
+      "reason": "变量引用不是凭据字面量"
+    },
+    {
+      "id": "ssh-public-key",
+      "category": "secret-lookalike",
+      "text": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl deploy@host",
+      "keep": ["AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"],
+      "reason": "公钥不是私密信息"
+    },
+    {
+      "id": "aws-docs-example-key",
+      "category": "secret-lookalike",
+      "text": "The AWS docs use AKIAIOSFODNN7EXAMPLE as the sample access key.",
+      "keep": ["AKIAIOSFODNN7EXAMPLE"],
+      "reason": "官方文档固定示例值"
+    },
+    {
+      "id": "git-scp-address",
+      "category": "email-lookalike",
+      "text": "git clone git@github.com:acme/repo.git",
+      "keep": ["git@github.com:acme/repo.git"],
+      "reason": "SSH 克隆地址不是邮箱"
+    },
+    {
+      "id": "git-bot-address",
+      "category": "email-lookalike",
+      "text": "author deploy-bot@git.acme.cn pushed 3 commits",
+      "keep": ["deploy-bot@git.acme.cn"],
+      "reason": "Git 机器人地址"
+    },
+    {
+      "id": "example-domain",
+      "category": "email-lookalike",
+      "text": "contact user@example.com for support",
+      "keep": ["user@example.com"],
+      "reason": "保留示例域名"
+    },
+    {
+      "id": "github-noreply",
+      "category": "email-lookalike",
+      "text": "Co-authored-by: Ann <12345+ann@users.noreply.github.com>",
+      "keep": ["12345+ann@users.noreply.github.com"],
+      "reason": "GitHub noreply 地址"
+    },
+    {
+      "id": "media-scale-suffix",
+      "category": "email-lookalike",
+      "text": "import logo from './logo@2x.png'",
+      "keep": ["logo@2x.png"],
+      "reason": "分辨率后缀不是邮箱域名"
+    },
+    {
+      "id": "npm-scope",
+      "category": "email-lookalike",
+      "text": "pnpm add @scope/package-name",
+      "keep": ["@scope/package-name"],
+      "reason": "npm 作用域"
+    },
+    {
+      "id": "no-tld-address",
+      "category": "email-lookalike",
+      "text": "set proxy to a@b for testing",
+      "keep": ["a@b"],
+      "reason": "缺少顶级域的串不构成邮箱"
+    },
+    {
+      "id": "epoch-seconds",
+      "category": "number-lookalike",
+      "text": "created_at 1731628800 finished_at 1731629400",
+      "keep": ["1731628800", "1731629400"],
+      "reason": "Unix 时间戳是数字串"
+    },
+    {
+      "id": "iso-date",
+      "category": "number-lookalike",
+      "text": "released on 2024-11-15 at noon",
+      "keep": ["2024-11-15"],
+      "reason": "日期不是电话号码"
+    },
+    {
+      "id": "semver",
+      "category": "number-lookalike",
+      "text": "bump to v4.0.32 then 4.1.0",
+      "keep": ["v4.0.32", "4.1.0"],
+      "reason": "版本号"
+    },
+    {
+      "id": "price-with-decimals",
+      "category": "number-lookalike",
+      "text": "total 1234.56 USD",
+      "keep": ["1234.56"],
+      "reason": "金额"
+    },
+    {
+      "id": "port-number",
+      "category": "number-lookalike",
+      "text": "listen on port 8080",
+      "keep": ["8080"],
+      "reason": "端口号"
+    },
+    {
+      "id": "isbn",
+      "category": "number-lookalike",
+      "text": "ISBN 978-7-111-12345-6",
+      "keep": ["978-7-111-12345-6"],
+      "reason": "ISBN 是出版物编号"
+    },
+    {
+      "id": "order-number",
+      "category": "number-lookalike",
+      "text": "订单号 2024111500012345 已发货",
+      "keep": ["2024111500012345"],
+      "reason": "订单号"
+    },
+    {
+      "id": "loopback-ip",
+      "category": "ip-lookalike",
+      "text": "connect to 127.0.0.1 for the local service",
+      "keep": ["127.0.0.1"],
+      "reason": "回环地址不指向具体主机"
+    },
+    {
+      "id": "unspecified-ip",
+      "category": "ip-lookalike",
+      "text": "bind 0.0.0.0:8080",
+      "keep": ["0.0.0.0"],
+      "reason": "未指定地址"
+    },
+    {
+      "id": "broadcast-ip",
+      "category": "ip-lookalike",
+      "text": "broadcast 255.255.255.255",
+      "keep": ["255.255.255.255"],
+      "reason": "广播地址"
+    },
+    {
+      "id": "five-part-version",
+      "category": "ip-lookalike",
+      "text": "version 1.2.3.4.5 shipped",
+      "keep": ["1.2.3.4.5"],
+      "reason": "五段版本号不是 IPv4"
+    },
+    {
+      "id": "long-numeric-build",
+      "category": "ip-lookalike",
+      "text": "build 10.20.30.40.50",
+      "keep": ["10.20.30.40.50"],
+      "reason": "五段构建号不是 IPv4"
+    },
+    {
+      "id": "luhn-invalid-card",
+      "category": "account-lookalike",
+      "text": "card 4111 1111 1111 1112 was declined",
+      "keep": ["4111 1111 1111 1112"],
+      "reason": "Luhn 校验不通过的随机数字串"
+    },
+    {
+      "id": "luhn-invalid-random",
+      "category": "account-lookalike",
+      "text": "reference 1234 5678 9012 3456",
+      "keep": ["1234 5678 9012 3456"],
+      "reason": "校验位错误的 16 位数字"
+    },
+    {
+      "id": "id-card-bad-checksum",
+      "category": "account-lookalike",
+      "text": "编号 110101199003077778",
+      "keep": ["110101199003077778"],
+      "reason": "身份证校验位不匹配"
+    },
+    {
+      "id": "iban-bad-checksum",
+      "category": "account-lookalike",
+      "text": "account GB00 1234 5678 9012",
+      "keep": ["GB00 1234 5678 9012"],
+      "reason": "IBAN mod-97 校验不通过"
+    },
+    {
+      "id": "employee-number",
+      "category": "account-lookalike",
+      "text": "工号 20240915 入职",
+      "keep": ["20240915"],
+      "reason": "工号"
+    },
+    {
+      "id": "batch-code",
+      "category": "account-lookalike",
+      "text": "批次 A1234567 已完成",
+      "keep": ["A1234567"],
+      "reason": "批次编号"
+    },
+    {
+      "id": "snake-case-identifier",
+      "category": "identifier",
+      "text": "let sequential_cutoff = parse_config();",
+      "keep": ["sequential_cutoff"],
+      "reason": "代码标识符"
+    },
+    {
+      "id": "kebab-case-identifier",
+      "category": "identifier",
+      "text": "install the my-cool-package dependency",
+      "keep": ["my-cool-package"],
+      "reason": "kebab-case 名称"
+    },
+    {
+      "id": "http-route",
+      "category": "identifier",
+      "text": "POST /api/v1/orders returns 201",
+      "keep": ["/api/v1/orders"],
+      "reason": "接口路径"
+    },
+    {
+      "id": "issue-number",
+      "category": "identifier",
+      "text": "fixes #1458 and #1460",
+      "keep": ["#1458", "#1460"],
+      "reason": "issue 编号"
+    },
+    {
+      "id": "model-ids",
+      "category": "identifier",
+      "text": "models: claude-3-5-sonnet-20241022, gpt-4o-mini, llama3-70b-8192",
+      "keep": [
+        "claude-3-5-sonnet-20241022",
+        "gpt-4o-mini",
+        "llama3-70b-8192"
+      ],
+      "reason": "模型名，含高熵的数字后缀"
+    },
+    {
+      "id": "file-path",
+      "category": "identifier",
+      "text": "edit src-tauri/src/main.rs and Cargo.toml",
+      "keep": ["src-tauri/src/main.rs", "Cargo.toml"],
+      "reason": "文件路径"
+    },
+    {
+      "id": "node-module",
+      "category": "identifier",
+      "text": "import { createRoot } from 'react-dom/client'",
+      "keep": ["react-dom/client"],
+      "reason": "包名"
+    },
+    {
+      "id": "rust-const",
+      "category": "code-context",
+      "text": "const TIMEOUT_MS: u64 = 30000;",
+      "keep": ["TIMEOUT_MS", "30000"],
+      "reason": "常量定义"
+    },
+    {
+      "id": "rust-use",
+      "category": "code-context",
+      "text": "use tokenizers::Tokenizer;",
+      "keep": ["tokenizers::Tokenizer"],
+      "reason": "含 token 字样的类型名"
+    },
+    {
+      "id": "config-key-with-token",
+      "category": "code-context",
+      "text": "max_tokens_per_request: 4096,",
+      "keep": ["max_tokens_per_request", "4096"],
+      "reason": "键名含 tokens，但不是凭据"
+    },
+    {
+      "id": "hex-literal",
+      "category": "code-context",
+      "text": "let mask = 0xdeadbeef;",
+      "keep": ["0xdeadbeef"],
+      "reason": "十六进制字面量"
+    },
+    {
+      "id": "rust-error-code",
+      "category": "code-context",
+      "text": "error[E0433]: cannot find module or crate",
+      "keep": ["E0433"],
+      "reason": "编译器错误码"
+    },
+    {
+      "id": "chinese-prose-numbers",
+      "category": "prose",
+      "text": "本季度共处理 1458 笔订单，金额 3200000 元，同比增长 12.5%。",
+      "keep": ["1458", "3200000", "12.5"],
+      "reason": "中文叙述里的普通数字"
+    },
+    {
+      "id": "english-prose-version-date",
+      "category": "prose",
+      "text": "We shipped version 2.1.0 on 2024-11-15 with 37 fixes.",
+      "keep": ["2.1.0", "2024-11-15", "37"],
+      "reason": "英文叙述里的版本与日期"
+    },
+    {
+      "id": "token-is-stored",
+      "category": "prose",
+      "text": "The token is stored in your system keychain.",
+      "keep": ["The token is stored in your system keychain."],
+      "reason": "自然语言句子，token 后接 is 不应被当成赋值"
+    },
+    {
+      "id": "secret-was-rotated",
+      "category": "prose",
+      "text": "The secret was rotated yesterday by the ops team.",
+      "keep": ["The secret was rotated yesterday by the ops team."],
+      "reason": "自然语言句子，secret 后接 was"
+    },
+    {
+      "id": "password-is-required",
+      "category": "prose",
+      "text": "A password is required for this account.",
+      "keep": ["A password is required for this account."],
+      "reason": "自然语言句子，password 后接 is"
+    },
+    {
+      "id": "japanese-prose",
+      "category": "prose",
+      "text": "2024年11月15日に v4.0.32 を公開しました。",
+      "keep": ["2024年11月15日", "v4.0.32"],
+      "reason": "日文叙述里的日期与版本"
+    },
+    {
+      "id": "dependabot-noreply",
+      "category": "email-lookalike",
+      "text": "Signed-off-by: dependabot[bot]@users.noreply.github.com",
+      "keep": ["dependabot[bot]@users.noreply.github.com"],
+      "reason": "带方括号的机器人地址不属于普通邮箱"
+    },
+    {
+      "id": "tracking-number",
+      "category": "number-lookalike",
+      "text": "物流单号 SF1234567890123 已揽收",
+      "keep": ["SF1234567890123"],
+      "reason": "快递单号"
+    },
+    {
+      "id": "api-route-with-query",
+      "category": "identifier",
+      "text": "GET /v1/models?limit=20",
+      "keep": ["/v1/models?limit=20"],
+      "reason": "带查询参数的接口路径"
+    },
+    {
+      "id": "loopback-with-port",
+      "category": "ip-lookalike",
+      "text": "open http://127.0.0.1:15721/health",
+      "keep": ["127.0.0.1"],
+      "reason": "带端口的回环地址"
+    },
+    {
+      "id": "ipv6-loopback",
+      "category": "ip-lookalike",
+      "text": "ping ::1 then localhost:3000",
+      "keep": ["::1", "localhost:3000"],
+      "reason": "IPv6 回环不是 IPv4，localhost 也不是地址字面量"
+    },
+    {
+      "id": "postal-code",
+      "category": "account-lookalike",
+      "text": "邮编 100084，北京市海淀区",
+      "keep": ["100084"],
+      "reason": "邮政编码"
+    },
+    {
+      "id": "short-order-id",
+      "category": "account-lookalike",
+      "text": "订单号 2024111500123 待支付",
+      "keep": ["2024111500123"],
+      "reason": "13 位订单号，既不是身份证也不是电话"
+    },
+    {
+      "id": "struct-with-secret-in-name",
+      "category": "code-context",
+      "text": "struct SecretStore { token_bucket: u32 }",
+      "keep": ["SecretStore", "token_bucket"],
+      "reason": "类型名与字段名含 secret/token 字样"
+    },
+    {
+      "id": "npm-filter-flag",
+      "category": "code-context",
+      "text": "npm run build --filter=@acme/api",
+      "keep": ["@acme/api"],
+      "reason": "命令行里的包过滤参数"
+    },
+    {
+      "id": "chinese-counts",
+      "category": "prose",
+      "text": "共计 1,024 条记录，预计 3 个工作日内送达。",
+      "keep": ["1,024", "3"],
+      "reason": "中文叙述里的计数"
+    },
+    {
+      "id": "ipv6-expanded-loopback",
+      "category": "ip-lookalike",
+      "text": "listen on 0:0:0:0:0:0:0:1 for local calls",
+      "keep": ["0:0:0:0:0:0:0:1"],
+      "reason": "展开写法的 IPv6 回环地址"
+    },
+    {
+      "id": "struct-field-typed-token",
+      "category": "code-context",
+      "text": "struct Credentials { token: String, expires_in: u64 }",
+      "keep": ["token: String", "expires_in"],
+      "reason": "字段名含 token，但右边是类型标注"
+    },
+    {
+      "id": "chinese-meeting-time",
+      "category": "prose",
+      "text": "会议定于 2024 年 11 月 15 日 14:30 开始，预计 90 分钟。",
+      "keep": ["2024", "14:30", "90"],
+      "reason": "中文叙述里的日期与时间"
+    }
+  ]
+}

@@ -492,11 +492,9 @@ pub fn run() {
     // 脱敏规则首次使用要编译两百多条正则，本地模型首次推理要加载约 60 MB。
     // 设置里已经开启时提前在后台预热，避免应用重启后的第一个代理请求承担这部分
     // 耗时；反过来，模型关闭时 prepare 也会把已加载的实例释放掉。
-    if let Some(config) = crate::settings::get_settings()
-        .redact
-        .filter(|config| config.enabled)
-    {
-        std::thread::spawn(move || crate::redact::prepare(&config));
+    let redact_config = crate::settings::redact_config_with_salt();
+    if redact_config.enabled {
+        std::thread::spawn(move || crate::redact::prepare(&redact_config));
     }
 
     let mut builder = tauri::Builder::default();

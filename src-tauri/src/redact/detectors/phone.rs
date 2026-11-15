@@ -30,6 +30,11 @@ impl Detector for PhoneDetector {
                 if !plausible_phone(found.as_str()) {
                     continue;
                 }
+                // 4-4-4 分组只是更长数字（无效卡号、订单号）的前三段，
+                // 真正的账号类型交给 AccountDetector 判定。
+                if is_card_group_prefix(found.as_str(), text, found.end()) {
+                    continue;
+                }
                 hits.push(Hit {
                     start: found.start(),
                     end: found.end(),
@@ -95,6 +100,30 @@ fn is_ascii_word(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
+/// 命中是「四段一组」卡号的前三段时跳过：`4111 1111 1111 1112` 里的
+/// `4111 1111 1111` 不是电话号码，真正的账号类型交给 AccountDetector。
+///
+/// 只对 4-4-4 分组生效：`86 139 1234`、`139 1234 5678` 这类真实号码
+/// 分组长度不一，不能因为后面还有数字就放过。
+fn is_card_group_prefix(value: &str, text: &str, end: usize) -> bool {
+    let groups: Vec<&str> = value.split([' ', '-']).collect();
+    let all_four = groups.len() == 3
+        && groups
+            .iter()
+            .all(|group| group.len() == 4 && group.bytes().all(|byte| byte.is_ascii_digit()));
+    if !all_four {
+        return false;
+    }
+    let mut chars = text[end..].chars();
+    let Some(separator) = chars.next() else {
+        return false;
+    };
+    if separator != ' ' && separator != '-' {
+        return false;
+    }
+    chars.take_while(|ch| ch.is_ascii_digit()).count() == 4
+}
+
 fn plausible_phone(value: &str) -> bool {
     let digits = value.chars().filter(|c| c.is_ascii_digit()).count();
     if !(7..=15).contains(&digits) {
@@ -139,6 +168,17 @@ mod tests {
         assert_eq!(detect("zip 555-0199"), vec!["555-0199"]);
         assert_eq!(detect("手机 13800138000"), vec!["13800138000"]);
         assert_eq!(detect("Call +1 415-555-0132"), vec!["415-555-0132"]);
+    }
+
+    #[test]
+    fn ignores_the_leading_groups_of_a_sixteen_digit_number() {
+        // 4-4-4-4 分组是卡号/订单号形态，电话规则不能只吃掉前三段。
+        assert!(detect("card 4111 1111 1111 1112").is_empty());
+        assert!(detect("reference 1234 5678 9012 3456").is_empty());
+        // 有效卡号同样交给 AccountDetector。
+        assert!(detect("card 4111 1111 1111 1111").is_empty());
+        // 正常号码后面跟普通文字不受影响。
+        assert_eq!(detect("call 415-555-0132 now"), vec!["415-555-0132"]);
     }
 
     #[test]

@@ -242,7 +242,13 @@ fn rule_set() -> &'static RuleSet {
             // Slack token。
             Rule::new(r"xox[abposr]-[0-9A-Za-z-]{10,}", 0, always, &["xox"]),
             // AWS access key id。
-            Rule::new(r"(?:AKIA|ASIA)[0-9A-Z]{16}", 0, always, &["AKIA", "ASIA"]),
+            // AWS access key id。`AKIAIOSFODNN7EXAMPLE` 是官方文档的固定示例值，跳过。
+            Rule::new(
+                r"(?:AKIA|ASIA)[0-9A-Z]{16}",
+                0,
+                not_documented_example,
+                &["AKIA", "ASIA"],
+            ),
             // GitHub classic / fine-grained token。
             Rule::new(
                 r"gh[pousr]_[A-Za-z0-9]{20,}",
@@ -290,15 +296,26 @@ fn rule_set() -> &'static RuleSet {
             // 自然语言：password is … / password: …
             //
             // 关键词两侧都要有词边界，避免从 `tokenizers` 里截出 `token`。
+            // 值还要过 `is_plausible_prose_secret`：`The token is stored in …`
+            // 里的 `stored` 是普通单词，不是口令。
             Rule::new(
                 r#"(?i)\b(?:password|passwd|secret|token|api[ _-]?key)\b\s*(?:is|was|are|[:=])\s*["']?([^\s"',，。;；]{6,})"#,
                 1,
-                is_plausible_secret_value,
+                is_plausible_prose_secret,
                 &["api", "secret", "token", "password", "passwd"],
             ),
-            // 中文：密码/口令/密钥 + 是/为/:/=
+            // Discord webhook URL：URL 本身等同凭据，整段替换。
             Rule::new(
-                r"(?:密码|口令|密钥|秘钥)\s*(?:是|为|[:=])\s*([^\s，。;；、]{6,})",
+                r"https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d{17,20}/[A-Za-z0-9_-]{30,}",
+                0,
+                always,
+                &["discord.com", "discordapp.com"],
+            ),
+            // 中文：密码/口令/密钥 + 是/为/:/=
+            //
+            // 全角冒号也是分隔符的一部分，不能落到捕获组里（否则标点被一起替换）。
+            Rule::new(
+                r"(?:密码|口令|密钥|秘钥)\s*(?:是|为|[:：=])\s*([^\s，。;；、：]{6,})",
                 1,
                 always,
                 &["密码", "口令", "密钥", "秘钥"],
@@ -311,6 +328,25 @@ fn rule_set() -> &'static RuleSet {
 
 fn always(_value: &str) -> bool {
     true
+}
+
+/// 云厂商文档里固定出现的示例凭据，脱敏只会破坏文档正文。
+fn not_documented_example(value: &str) -> bool {
+    !matches!(value, "AKIAIOSFODNN7EXAMPLE")
+}
+
+/// 自然语言口令的值过滤：在通用过滤之上再排除普通英文单词。
+///
+/// `The token is stored …`、`the secret was rotated` 这类句子里，`is/was` 后面
+/// 跟的是动词或形容词，结构上与 `password is hunter2` 无法区分，只能按值形态
+/// 判断：全小写纯字母且不超过 12 个字符视为普通单词。真实口令通常含数字、
+/// 符号或足够长，不受影响。
+pub(crate) fn is_plausible_prose_secret(value: &str) -> bool {
+    if !is_plausible_secret_value(value) {
+        return false;
+    }
+    let length = value.chars().count();
+    !(length <= 12 && value.chars().all(|ch| ch.is_ascii_lowercase()))
 }
 
 /// `sk-` 前缀的值还需要像密钥：含数字、不含点（排除 `sk-hynix-...html` 这类 slug）。
@@ -497,9 +533,37 @@ mod tests {
             vec!["AIzaSyB3xQ9mLk2Vr7TpW4nZs8YhC1dFgJ6uKe0oA"]
         );
         assert_eq!(
-            detect("key = AKIAIOSFODNN7EXAMPLE"),
-            vec!["AKIAIOSFODNN7EXAMPLE"]
+            detect("key = AKIAIOSFODNN7EXAMPL3"),
+            vec!["AKIAIOSFODNN7EXAMPL3"]
         );
+        // 官方文档里的固定示例值不脱敏，避免破坏文档正文。
+        assert!(detect("key = AKIAIOSFODNN7EXAMPLE").is_empty());
+    }
+
+    #[test]
+    fn prose_words_after_is_are_not_secrets() {
+        for text in [
+            "The token is stored in your system keychain.",
+            "The secret was rotated yesterday by the ops team.",
+            "A password is required for this account.",
+        ] {
+            assert!(detect(text).is_empty(), "不应命中：{text}");
+        }
+        // 真正的口令仍然要命中的。
+        assert_eq!(
+            detect("The password is Hunter2Complex!"),
+            vec!["Hunter2Complex!"]
+        );
+        assert_eq!(
+            detect("password: correcthorsebatterystaple"),
+            vec!["correcthorsebatterystaple"]
+        );
+    }
+
+    #[test]
+    fn detects_discord_webhook_urls() {
+        let url = "https://discord.com/api/webhooks/123456789012345678/AbC123xYz456QwE789RtY012UiO345PqR6789AbCd";
+        assert_eq!(detect(&format!("hook {url}")), vec![url]);
     }
 
     #[test]
