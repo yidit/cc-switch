@@ -73,7 +73,10 @@ impl SystemKeychain {
     }
 
     /// 真机测试用的另一条，别动 agy 那条。
-    #[cfg(test)]
+    ///
+    /// 只有 macOS 的真机冒烟测试会用到，其他平台要跟着一起裁掉，
+    /// 否则 `clippy --all-targets` 会把它算成死代码。
+    #[cfg(all(test, target_os = "macos"))]
     pub fn named(service: &'static str, account: &'static str) -> Self {
         Self { service, account }
     }
