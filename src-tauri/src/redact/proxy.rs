@@ -38,8 +38,9 @@ pub fn mask_request_body(
 
     let engine = Engine::with_builtin(config);
 
-    // 本地模型：启用但文件不可用时，按 failClosed 决定拒绝还是退回规则层。
-    let model = if config.model.enabled {
+    // 本地模型：只在至少有一个模型能产出的类型启用时才值得加载；启用但文件
+    // 不可用时，按 failClosed 决定拒绝还是退回规则层。
+    let model = if crate::redact::model::engaged(config) {
         match crate::redact::model::load_engine() {
             Ok(model) => Some(model),
             Err(error) => {

@@ -125,6 +125,38 @@ pub fn reset_engine() {
     }
 }
 
+/// 模型能产出的敏感类型（与 [`parse_label`] 保持一致；IP、URL、日期不在范围内）。
+const MODEL_KINDS: [Kind; 6] = [
+    Kind::Email,
+    Kind::Phone,
+    Kind::Account,
+    Kind::Secret,
+    Kind::Person,
+    Kind::Address,
+];
+
+/// 模型是否至少能贡献一个当前启用的类型。
+///
+/// 不满足时加载模型（约 1 秒、60 MB）和逐字符串推理都只是白费：结果会被
+/// [`filter_by_config`] 全部丢弃。
+pub fn engaged(config: &RedactConfig) -> bool {
+    config.model.enabled && MODEL_KINDS.iter().any(|kind| kind_enabled(config, *kind))
+}
+
+/// 按配置加载或释放模型。
+///
+/// 关闭模型、或当前没有任何模型能产出的类型时立即释放已加载的实例，让常驻
+/// 内存回到不含模型的水平。调用方应在后台线程执行（加载约 1 秒）。
+pub fn prepare(config: &RedactConfig) {
+    if config.enabled && engaged(config) {
+        if let Err(error) = load_engine() {
+            log::warn!("[redact] 本地脱敏模型预加载失败: {error}");
+        }
+    } else {
+        reset_engine();
+    }
+}
+
 /// 本地模型推理器。
 pub struct ModelEngine {
     session: Mutex<Session>,
@@ -543,5 +575,33 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].end, 14);
         assert_eq!(merged[1].kind, Kind::Email);
+    }
+
+    fn engagement(secrets: bool, personal: bool, kinds: Vec<Kind>, model: bool) -> RedactConfig {
+        RedactConfig {
+            enabled: true,
+            secrets,
+            personal,
+            kinds,
+            model: crate::redact::ModelConfig {
+                enabled: model,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn model_is_engaged_only_when_a_model_kind_is_enabled() {
+        // 模型自身关闭。
+        assert!(!engaged(&engagement(true, true, vec![], false)));
+        // 两个总开关都关，模型产出的类型全会被过滤。
+        assert!(!engaged(&engagement(false, false, vec![], true)));
+        // 只开个人信息或只开密钥都值得加载。
+        assert!(engaged(&engagement(false, true, vec![], true)));
+        assert!(engaged(&engagement(true, false, vec![], true)));
+        // 模型不产出 IP，只勾 IP 时不该加载。
+        assert!(!engaged(&engagement(false, true, vec![Kind::Ip], true)));
+        assert!(engaged(&engagement(false, true, vec![Kind::Person], true)));
     }
 }

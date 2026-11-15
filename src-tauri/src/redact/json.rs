@@ -69,7 +69,7 @@ pub fn mask_json(
     }
 
     let model_hits = match model {
-        Some(model) if config.model.enabled => {
+        Some(model) if crate::redact::model::engaged(config) => {
             // 只借用字符串，不克隆：请求体可能有几 MB 的文本，复制一份纯属浪费内存。
             let mut texts = Vec::new();
             collect_strings(value, None, &mut texts);

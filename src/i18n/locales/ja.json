@@ -1201,7 +1201,7 @@
       "modelTitle": "ローカルモデル",
       "modelDescription": "AstrLink Guard をこの端末で動かし、ルールでは拾えない人名や住所を検出します。モデルは有効にしたときだけダウンロードします。",
       "modelEnabled": "ローカルモデルを有効化",
-      "modelEnabledDescription": "人名・住所などの自由文を補完します。先にモデルファイルをダウンロードしてください。",
+      "modelEnabledDescription": "人名・住所などの自由文を補完します。先にモデルファイルをダウンロードしてください。上で有効にした個人情報の種類にのみ適用され、「個人情報を秘匿化」のスイッチに従います。",
       "modelStatusMissing": "未ダウンロード（約 {{size}} MB）",
       "modelStatusDownloading": "ダウンロード中：{{percent}}%",
       "modelStatusReady": "準備完了（約 {{size}} MB）",

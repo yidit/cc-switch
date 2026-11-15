@@ -45,7 +45,7 @@ fn preview(text: &str) -> Result<RedactPreviewResult, String> {
     let engine = crate::redact::Engine::with_builtin(&config);
     let mut table = crate::redact::PlaceholderTable::from_config(&config);
 
-    let model = if config.model.enabled {
+    let model = if crate::redact::model::engaged(&config) {
         match crate::redact::model::load_engine() {
             Ok(model) => Some(model),
             Err(error) => {

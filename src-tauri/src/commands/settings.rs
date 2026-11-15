@@ -101,16 +101,14 @@ pub async fn save_settings(
     let tray_style_changed = merged.native_tray_menu != existing.native_tray_menu;
     let without_login_changed =
         merged.codex_proxy_without_official_login != existing.codex_proxy_without_official_login;
-    // gitleaks 规则、内置密钥规则、自定义词/规则首次使用时要编译正则；开启
-    // 脱敏时在后台预热，避免第一个请求承担编译耗时。`merged` 随后会被移动，
-    // 这里先取一份配置。
-    let warm_redact = merged.redact.clone().filter(|redact| redact.enabled);
+    // 脱敏规则首次使用要编译正则，本地模型首次推理要加载约 60 MB。保存后按
+    // 新配置在后台预热；模型关闭（或类型全部关上）时顺带释放已加载的实例。
+    // `merged` 随后会被移动，这里先取一份配置。
+    let redact_config = merged.redact.clone().unwrap_or_default();
     let preserve_login_changed = merged.preserve_codex_official_auth_on_switch
         != existing.preserve_codex_official_auth_on_switch;
     crate::settings::update_settings(merged).map_err(|e| e.to_string())?;
-    if let Some(config) = warm_redact {
-        std::thread::spawn(move || crate::redact::warm_up(&config));
-    }
+    std::thread::spawn(move || crate::redact::prepare(&redact_config));
 
     // 原生托盘菜单 / 托盘面板当场切换，不用重启。
     if tray_style_changed {

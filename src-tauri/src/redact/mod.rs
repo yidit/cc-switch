@@ -196,6 +196,17 @@ pub fn warm_up(config: &RedactConfig) {
     detectors::gitleaks::warm_up();
 }
 
+/// 按配置预热脱敏资源：启用时编译规则，本地模型按需加载；关闭时释放模型。
+///
+/// 启动和保存设置时在后台线程调用，避免第一个请求承担初始化耗时，同时保证
+/// 关掉模型后常驻内存能真正降下来。
+pub fn prepare(config: &RedactConfig) {
+    if config.enabled {
+        warm_up(config);
+    }
+    model::prepare(config);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

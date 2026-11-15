@@ -1201,7 +1201,7 @@
       "modelTitle": "本機模型",
       "modelDescription": "用 AstrLink Guard 在本機辨識人名、地址等規則難以涵蓋的資訊；模型只在開啟後下載。",
       "modelEnabled": "啟用本機模型",
-      "modelEnabledDescription": "補足人名、地址等自由文字資訊；需要先下載模型檔案。",
+      "modelEnabledDescription": "補足人名、地址等自由文字資訊；需要先下載模型檔案。只在上方啟用的個人資訊類型上生效，並受「脫敏個人資訊」開關控制。",
       "modelStatusMissing": "尚未下載（約 {{size}} MB）",
       "modelStatusDownloading": "正在下載：{{percent}}%",
       "modelStatusReady": "已就緒（約 {{size}} MB）",

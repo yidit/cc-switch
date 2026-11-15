@@ -1201,7 +1201,7 @@
       "modelTitle": "Local model",
       "modelDescription": "Uses AstrLink Guard on this machine to catch names and addresses the rules cannot; the model is only downloaded after you turn it on.",
       "modelEnabled": "Enable the local model",
-      "modelEnabledDescription": "Covers names, addresses and other free text; download the model files first.",
+      "modelEnabledDescription": "Covers names, addresses and other free text; download the model files first. Only runs for the personal data types enabled above, and follows the “Redact personal data” switch.",
       "modelStatusMissing": "Not downloaded yet (about {{size}} MB)",
       "modelStatusDownloading": "Downloading: {{percent}}%",
       "modelStatusReady": "Ready (about {{size}} MB)",

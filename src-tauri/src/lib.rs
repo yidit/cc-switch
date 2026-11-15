@@ -488,14 +488,14 @@ pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 <app_config_dir>/crash.log（默认 ~/.cc-switch/crash.log）
     panic_hook::setup_panic_hook();
 
-    // 脱敏规则首次使用要编译两百多条正则。设置里已经开启时提前在后台预热，
-    // 避免应用重启后的第一个代理请求承担编译耗时（保存设置时也会预热）。
-    if crate::settings::get_settings()
+    // 脱敏规则首次使用要编译两百多条正则，本地模型首次推理要加载约 60 MB。
+    // 设置里已经开启时提前在后台预热，避免应用重启后的第一个代理请求承担这部分
+    // 耗时；反过来，模型关闭时 prepare 也会把已加载的实例释放掉。
+    if let Some(config) = crate::settings::get_settings()
         .redact
-        .as_ref()
-        .is_some_and(|redact| redact.enabled && redact.secrets)
+        .filter(|config| config.enabled)
     {
-        std::thread::spawn(crate::redact::warm_up_secret_rules);
+        std::thread::spawn(move || crate::redact::prepare(&config));
     }
 
     let mut builder = tauri::Builder::default();

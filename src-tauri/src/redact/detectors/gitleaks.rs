@@ -6,6 +6,7 @@
 use crate::redact::{Action, Detector, Hit, Kind, RedactConfig};
 use aho_corasick::{AhoCorasick, MatchKind};
 use once_cell::sync::Lazy;
+use regex::bytes::{Regex as BytesRegex, RegexBuilder as BytesRegexBuilder};
 use regex::Regex;
 use serde::Deserialize;
 
@@ -190,7 +191,7 @@ const CONTEXT_VALUE_PLACEHOLDERS: &[&str] = &[
 const MASK_CHARS: &[char] = &['*', '•', '·', '.', '?', '-', '_', ','];
 
 struct SecretRule {
-    re: Regex,
+    re: BytesRegex,
     /// 已小写；空表示该规则总是参与
     keywords: Vec<String>,
     entropy: f64,
@@ -237,23 +238,32 @@ impl RuleAllowlist {
         })
     }
 
-    fn allows(&self, text: &str, whole: regex::Match<'_>, secret: regex::Match<'_>) -> bool {
+    /// 白名单判定。区间都由调用方保证落在字符边界上，可以直接切片。
+    fn allows(
+        &self,
+        text: &str,
+        whole_start: usize,
+        whole_end: usize,
+        secret_start: usize,
+        secret_end: usize,
+    ) -> bool {
+        let secret = &text[secret_start..secret_end];
         let target = match self.regex_target.as_str() {
-            "match" => whole.as_str(),
+            "match" => &text[whole_start..whole_end],
             "line" => {
-                let start = text[..secret.start()].rfind('\n').map_or(0, |i| i + 1);
-                let end = text[secret.end()..]
+                let start = text[..secret_start].rfind('\n').map_or(0, |i| i + 1);
+                let end = text[secret_end..]
                     .find('\n')
-                    .map_or(text.len(), |i| secret.end() + i);
+                    .map_or(text.len(), |i| secret_end + i);
                 &text[start..end]
             }
-            _ => secret.as_str(),
+            _ => secret,
         };
         let regex_match = self.regexes.iter().any(|re| re.is_match(target));
         let stopword_match = if self.stopwords.is_empty() {
             false
         } else {
-            let lower = secret.as_str().to_lowercase();
+            let lower = secret.to_lowercase();
             self.stopwords
                 .iter()
                 .any(|word| lower.contains(word.as_str()))
@@ -417,6 +427,42 @@ struct TomlAllowlist {
     paths: Vec<String>,
 }
 
+/// 对 gitleaks 规则的本地微调。
+///
+/// 规则集是从上游自动生成的，直接改 TOML 会在下次同步时被覆盖，所以调整放在这里。
+///
+/// `generic-api-key`：默认熵阈值 3.5 会把模型名 `llama3-70b-8192`（熵 3.507）
+/// 当成密钥。这条规则原先因编译产物超过 regex 默认 10 MB 上限而被整体跳过，
+/// 改用 ASCII 编译后才真正生效；评估语料里只此一处误报，阈值提到 3.6 后真密钥
+/// （熵普遍在 4 以上）全部保留。
+const ENTROPY_OVERRIDES: &[(&str, f64)] = &[("generic-api-key", 3.6)];
+
+fn entropy_for(id: &str, configured: f64) -> f64 {
+    ENTROPY_OVERRIDES
+        .iter()
+        .find(|(rule, _)| *rule == id)
+        .map_or(configured, |(_, entropy)| *entropy)
+}
+
+/// 编译一条 gitleaks 规则。
+///
+/// ASCII 优先：规则源自 Go regexp，`\w`、`\s`、`(?i)` 在那边本来就是 ASCII
+/// 语义；用 Unicode 模式会把大字符类展开成巨大的自动机（实测每条规则约 2 MB，
+/// 整个规则集近 460 MB）。个别模式只能在 Unicode 模式下解析，退回即可。
+///
+/// 用 `regex::bytes` 而不是 `regex::Regex`：ASCII 模式下 `[^"]`、`.{8,}` 这类
+/// 模式可以匹配非法 UTF-8 字节，`Regex` 会直接拒绝编译；bytes 版本允许，
+/// 命中区间再按字符边界过滤（见 [`SecretRules::detect`]）。
+fn compile_rule(pattern: &str) -> Result<BytesRegex, regex::Error> {
+    let build = |unicode: bool| {
+        BytesRegexBuilder::new(pattern)
+            .unicode(unicode)
+            .size_limit(50 * (1 << 20))
+            .build()
+    };
+    build(false).or_else(|_| build(true))
+}
+
 impl SecretRules {
     fn from_gitleaks_toml(toml_text: &str) -> Self {
         let mut sd = Self {
@@ -430,14 +476,14 @@ impl SecretRules {
                     if r.regex.is_empty() {
                         continue;
                     }
-                    let Ok(re) = Regex::new(&r.regex) else {
+                    let Ok(re) = compile_rule(&r.regex) else {
                         sd.skipped += 1;
                         continue;
                     };
                     sd.rules.push(SecretRule {
                         re,
                         keywords: r.keywords.iter().map(|k| k.to_lowercase()).collect(),
-                        entropy: r.entropy,
+                        entropy: entropy_for(&r.id, r.entropy),
                         secret_group: r.secret_group,
                         is_generic: r.id == "generic-api-key",
                         // 这两条规则的捕获组只是格式分段，整段才是凭证。
@@ -486,7 +532,7 @@ impl SecretRules {
         ];
         for (pat, kws) in builtin {
             self.rules.push(SecretRule {
-                re: Regex::new(pat).unwrap(),
+                re: compile_rule(pat).unwrap(),
                 keywords: kws.iter().map(|k| k.to_string()).collect(),
                 entropy: 0.0,
                 secret_group: 0,
@@ -515,7 +561,7 @@ impl SecretRules {
             if !active[index] {
                 continue;
             }
-            for caps in r.re.captures_iter(text) {
+            for caps in r.re.captures_iter(text.as_bytes()) {
                 let whole = caps.get(0).unwrap();
                 let m = if r.whole_secret {
                     whole
@@ -532,11 +578,20 @@ impl SecretRules {
                         .unwrap_or(whole)
                 };
                 let (s, e) = (m.start(), m.end());
-                if s >= e {
+                let (ws, we) = (whole.start(), whole.end());
+                // 字节正则可能匹配到多字节字符中间；这种区间无法切片，
+                // 与引擎「命中必须落在字符边界」的约束一致，直接丢弃。
+                if s >= e
+                    || !text.is_char_boundary(s)
+                    || !text.is_char_boundary(e)
+                    || !text.is_char_boundary(ws)
+                    || !text.is_char_boundary(we)
+                {
                     continue;
                 }
-                let cand = m.as_str();
-                if r.allowlists.iter().any(|a| a.allows(text, whole, m)) {
+                let cand = &text[s..e];
+                let whole_text = &text[ws..we];
+                if r.allowlists.iter().any(|a| a.allows(text, ws, we, s, e)) {
                     continue;
                 }
                 if r.entropy > 0.0 && shannon_entropy(cand) < r.entropy {
@@ -544,10 +599,10 @@ impl SecretRules {
                 }
                 // 专用规则已识别凭证格式，不能再把 webhook URL、hex 或 UUID 密钥当误报。
                 if (r.is_generic
-                    && (looks_like_url_match(whole.as_str())
+                    && (looks_like_url_match(whole_text)
                         || is_hex_hash(cand)
                         || is_uuid(cand)
-                        || is_business_id_assignment(whole.as_str())
+                        || is_business_id_assignment(whole_text)
                         || cand.contains(',')))
                     || is_template_var(cand)
                     || is_benign_id(cand)
@@ -938,5 +993,140 @@ mod tests {
             ..Default::default()
         };
         assert!(!GitleaksDetector.detect(text, &limited).is_empty());
+    }
+
+    fn enabled() -> RedactConfig {
+        RedactConfig {
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn every_bundled_rule_compiles() {
+        // 以前有 3 条规则（generic-api-key、pypi-upload-token、vault-batch-token）
+        // 因编译产物超过 regex 默认 10 MB 上限被静默跳过；ASCII 化后应全部可用。
+        let (loaded, skipped) = RULES.stats();
+        assert!(loaded > 200, "只加载了 {loaded} 条规则");
+        assert_eq!(skipped, 0, "有 {skipped} 条规则被跳过");
+    }
+
+    #[test]
+    fn generic_rule_ignores_model_names_but_keeps_tokens() {
+        // 熵 3.507 的模型名曾越过默认阈值 3.5，属于误报。
+        let model = r#"groqAPIModel = "llama3-70b-8192""#;
+        assert!(
+            GitleaksDetector.detect(model, &enabled()).is_empty(),
+            "模型名不应被当作密钥"
+        );
+
+        let token = "aB3xK9pLmN2qR7sT5vW1zYQwErTyUiOp";
+        let text = format!("api_key = {token}");
+        let hits = GitleaksDetector.detect(&text, &enabled());
+        assert!(
+            hits.iter().any(|hit| &text[hit.start..hit.end] == token),
+            "{hits:?}"
+        );
+    }
+
+    #[test]
+    fn keeps_secrets_next_to_multibyte_text() {
+        // bytes 正则按字节匹配，紧挨中文的命中仍要落在字符边界上。
+        let token = "aB3xK9pLmN2qR7sT5vW1zYQwErTyUiOp";
+        let text = format!("配置 api_key = {token}，结束");
+        let hits = GitleaksDetector.detect(&text, &enabled());
+
+        assert!(
+            hits.iter().any(|hit| &text[hit.start..hit.end] == token),
+            "{hits:?}"
+        );
+        for hit in &hits {
+            assert!(text.is_char_boundary(hit.start) && text.is_char_boundary(hit.end));
+        }
+    }
+
+    /// ASCII 编译不能改变命中区间：对评估语料逐条比较「Unicode 正则」与
+    /// 「ASCII bytes 正则」的整段命中。只比较被关键词激活的规则，其余规则在
+    /// 生产中不会运行。
+    #[test]
+    fn ascii_compilation_preserves_match_spans() {
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        struct Corpus {
+            cases: Vec<Case>,
+        }
+
+        #[derive(Deserialize)]
+        struct Case {
+            text: String,
+        }
+
+        #[derive(Deserialize)]
+        struct RawConfig {
+            #[serde(default)]
+            rules: Vec<RawRule>,
+        }
+
+        #[derive(Deserialize)]
+        struct RawRule {
+            #[serde(default)]
+            id: String,
+            #[serde(default)]
+            regex: String,
+            #[serde(default)]
+            keywords: Vec<String>,
+        }
+
+        let corpus: Corpus = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/redact/eval-cases.json"
+        ))
+        .expect("评估语料应是合法 JSON");
+        let config: RawConfig =
+            toml::from_str(include_str!("gitleaks.toml")).expect("规则集应可解析");
+        let texts: Vec<&str> = corpus.cases.iter().map(|case| case.text.as_str()).collect();
+
+        let mut compared = 0;
+        for rule in config
+            .rules
+            .iter()
+            .filter(|rule| !rule.regex.trim().is_empty())
+        {
+            let triggered = rule.keywords.is_empty()
+                || texts.iter().any(|text| {
+                    let lower = text.to_lowercase();
+                    rule.keywords
+                        .iter()
+                        .any(|keyword| lower.contains(&keyword.to_lowercase()))
+                });
+            if !triggered {
+                continue;
+            }
+            // Unicode 都编译不了的规则情况不同（本就不参与检测），跳过。
+            let Ok(legacy) = Regex::new(&rule.regex) else {
+                continue;
+            };
+            let current = compile_rule(&rule.regex).expect("ASCII 编译不应失败");
+            for text in &texts {
+                let before: Vec<(usize, usize)> = legacy
+                    .find_iter(text)
+                    .map(|found| (found.start(), found.end()))
+                    .collect();
+                let after: Vec<(usize, usize)> = current
+                    .find_iter(text.as_bytes())
+                    .filter(|found| {
+                        text.is_char_boundary(found.start()) && text.is_char_boundary(found.end())
+                    })
+                    .map(|found| (found.start(), found.end()))
+                    .collect();
+                assert_eq!(
+                    before, after,
+                    "规则 {} 在 {text:?} 上的命中区间发生变化",
+                    rule.id
+                );
+            }
+            compared += 1;
+        }
+        assert!(compared >= 5, "可比较的规则太少：{compared}");
     }
 }

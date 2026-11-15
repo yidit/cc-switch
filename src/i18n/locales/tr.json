@@ -1201,7 +1201,7 @@
       "modelTitle": "Yerel model",
       "modelDescription": "Kuralların yakalayamadığı ad ve adresleri bulmak için AstrLink Guard'ı bu makinede çalıştırır; model yalnızca etkinleştirdiğinizde indirilir.",
       "modelEnabled": "Yerel modeli etkinleştir",
-      "modelEnabledDescription": "Ad, adres ve diğer serbest metinleri kapsar; önce model dosyalarını indirin.",
+      "modelEnabledDescription": "Ad, adres ve diğer serbest metinleri kapsar; önce model dosyalarını indirin. Yalnızca yukarıda etkinleştirilen kişisel veri türlerinde çalışır ve “Kişisel verileri gizle” anahtarına uyar.",
       "modelStatusMissing": "Henüz indirilmedi (yaklaşık {{size}} MB)",
       "modelStatusDownloading": "İndiriliyor: %{{percent}}",
       "modelStatusReady": "Hazır (yaklaşık {{size}} MB)",

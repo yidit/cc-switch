@@ -1201,7 +1201,7 @@
       "modelTitle": "本地模型",
       "modelDescription": "用 AstrLink Guard 在本机识别人名、地址等规则难以覆盖的信息；模型只在开启后下载。",
       "modelEnabled": "启用本地模型",
-      "modelEnabledDescription": "补足人名、地址等自由文本信息；需要先下载模型文件。",
+      "modelEnabledDescription": "补足人名、地址等自由文本信息；需要先下载模型文件。只在上方开启的个人信息类型上生效，并受「脱敏个人信息」开关控制。",
       "modelStatusMissing": "尚未下载（约 {{size}} MB）",
       "modelStatusDownloading": "正在下载：{{percent}}%",
       "modelStatusReady": "已就绪（约 {{size}} MB）",

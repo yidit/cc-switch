@@ -1201,7 +1201,7 @@
       "modelTitle": "Lokales Modell",
       "modelDescription": "Nutzt AstrLink Guard auf diesem Rechner, um Namen und Adressen zu finden, die die Regeln nicht erfassen; das Modell wird erst nach dem Aktivieren heruntergeladen.",
       "modelEnabled": "Lokales Modell aktivieren",
-      "modelEnabledDescription": "Erfasst Namen, Adressen und anderen Freitext; laden Sie zuerst die Modelldateien herunter.",
+      "modelEnabledDescription": "Erfasst Namen, Adressen und anderen Freitext; laden Sie zuerst die Modelldateien herunter. Wirkt nur auf die oben aktivierten Arten personenbezogener Daten und folgt dem Schalter „Personenbezogene Daten redigieren“.",
       "modelStatusMissing": "Noch nicht heruntergeladen (ca. {{size}} MB)",
       "modelStatusDownloading": "Wird heruntergeladen: {{percent}} %",
       "modelStatusReady": "Bereit (ca. {{size}} MB)",
