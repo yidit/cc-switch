@@ -25,6 +25,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::provider::Provider;
+use crate::provider_kind::ProviderKind;
 use crate::services::usage_cache::UsageCache;
 use crate::store::AppState;
 
@@ -1197,8 +1198,6 @@ fn cached_usage_view(
 
 // ─── 「需要路由」判定（镜像前端 `providerNeedsRouting`）──────────────────────────────
 
-const MANAGED_OAUTH_PROVIDER_TYPES: &[&str] = &["github_copilot", "codex_oauth", "xai_oauth"];
-
 /// 官方账号卡（同前端 `isOfficialAccount`）：Codex 早期绑定托管账号的官方卡没有 category，按身份认。
 fn is_official_account(app: &AppType, provider: &Provider) -> bool {
     provider.category.as_deref() == Some("official")
@@ -1266,9 +1265,7 @@ pub(crate) fn provider_needs_routing(app: &AppType, provider: &Provider) -> bool
         return false;
     }
     let meta = provider.meta.as_ref();
-    let managed_oauth = meta
-        .and_then(|meta| meta.provider_type.as_deref())
-        .is_some_and(|kind| MANAGED_OAUTH_PROVIDER_TYPES.contains(&kind));
+    let managed_oauth = ProviderKind::declared(provider).is_some();
     let full_url = meta.and_then(|meta| meta.is_full_url) == Some(true);
     let api_format = meta
         .and_then(|meta| meta.api_format.as_deref())
@@ -2253,9 +2250,8 @@ fn collect_model(app_state: &AppState, texts: &TrayTexts) -> Result<TrayModel, A
 
 /// 退出会让它们断开的情况：路由服务在跑，且有应用在路由 / 聚合模式（含 Claude Desktop；和
 /// `controller::stop_server_if_unused` 的「在用」同一口径，隐藏的应用也算）。
-fn routing_in_use(app_state: &AppState) -> bool {
-    app_state.proxy_service.running_now() == Some(true)
-        && crate::mode::current::proxy_flags(crate::mode::controller::PROXY_APPS).contains(&true)
+pub(crate) fn routing_in_use(app_state: &AppState) -> bool {
+    app_state.proxy_service.running_now() == Some(true) && crate::mode::current::any_proxy()
 }
 
 // ─── 模型 → 托盘面板 ───────────────────────────────────────────────────────────
@@ -3627,7 +3623,7 @@ mod tests {
             ]
         );
         for app in TRAY_APPS {
-            assert!(!app.is_additive_mode(), "{app:?} 是累加式应用，不进托盘");
+            assert!(!app.spec().additive, "{app:?} 是累加式应用，不进托盘");
         }
     }
 
