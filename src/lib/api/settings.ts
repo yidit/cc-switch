@@ -99,14 +99,6 @@ export const settingsApi = {
     return await invoke("pick_directory", { defaultPath });
   },
 
-  async getClaudeCodeConfigPath(): Promise<string> {
-    return await invoke("get_claude_code_config_path");
-  },
-
-  async getAppConfigPath(): Promise<string> {
-    return await invoke("get_app_config_path");
-  },
-
   async openAppConfigFolder(): Promise<void> {
     await invoke("open_app_config_folder");
   },
@@ -224,6 +216,10 @@ export const settingsApi = {
     });
   },
 
+  async s3SyncClearSettings(): Promise<{ success: boolean }> {
+    return await invoke("s3_sync_clear_settings");
+  },
+
   async s3SyncFetchRemoteInfo(): Promise<RemoteSnapshotInfo | { empty: true }> {
     return await invoke("s3_sync_fetch_remote_info");
   },
@@ -253,10 +249,6 @@ export const settingsApi = {
 
   async setAutoLaunch(enabled: boolean): Promise<boolean> {
     return await invoke("set_auto_launch", { enabled });
-  },
-
-  async getAutoLaunchStatus(): Promise<boolean> {
-    return await invoke("get_auto_launch_status");
   },
 
   async getToolVersions(
