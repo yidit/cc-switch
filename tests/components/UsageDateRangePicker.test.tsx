@@ -18,6 +18,12 @@ function toTs(d: Date): number {
   return Math.floor(d.getTime() / 1000);
 }
 
+function formatDay(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
+
 function openPicker(onApply = vi.fn()) {
   render(
     <UsageDateRangePicker
@@ -134,5 +140,78 @@ describe("UsageDateRangePicker bounds", () => {
       if (index > todayIndex) expect(btn).toBeDisabled();
       else expect(btn).not.toBeDisabled();
     });
+  });
+
+  // #9699：逐位键入年份时，没打完的 0002 不能被当成 19xx 年提交并改写输入框
+  it("keeps a partially typed year in the field and does not commit it", () => {
+    const onApply = openPicker();
+    const [startInput] =
+      document.querySelectorAll<HTMLInputElement>('input[type="date"]');
+    const committedDay = startInput.value;
+
+    fireEvent.change(startInput, { target: { value: "0002-01-01" } });
+    // 草稿原样留在输入框里，等用户继续把年份打完
+    expect(startInput.value).toBe("0002-01-01");
+
+    fireEvent.click(screen.getByRole("button", { name: "common.confirm" }));
+    expect(onApply).toHaveBeenCalledTimes(1);
+    const applied = onApply.mock.calls[0][0];
+    // 起点仍是原来的日期，没有被 1902 年覆盖
+    expect(formatDay(new Date(applied.customStartDate * 1000))).toBe(
+      committedDay,
+    );
+    expect(applied.customStartDate).toBeGreaterThanOrEqual(
+      toTs(new Date(2025, 5, 1)),
+    );
+  });
+
+  it("commits a date once the year is complete", () => {
+    const onApply = openPicker();
+    const [startInput] =
+      document.querySelectorAll<HTMLInputElement>('input[type="date"]');
+
+    fireEvent.change(startInput, { target: { value: "2025-07-01" } });
+    expect(startInput.value).toBe("2025-07-01");
+    fireEvent.blur(startInput);
+    expect(startInput.value).toBe("2025-07-01");
+
+    fireEvent.click(screen.getByRole("button", { name: "common.confirm" }));
+    const start = new Date(onApply.mock.calls[0][0].customStartDate * 1000);
+    expect([start.getFullYear(), start.getMonth(), start.getDate()]).toEqual([
+      2025, 6, 1,
+    ]);
+  });
+
+  it("restores the committed date when the field is cleared before blurring", () => {
+    const onApply = openPicker();
+    const [startInput] =
+      document.querySelectorAll<HTMLInputElement>('input[type="date"]');
+    const committedDay = startInput.value;
+
+    fireEvent.change(startInput, { target: { value: "" } });
+    expect(startInput.value).toBe("");
+    fireEvent.blur(startInput);
+    expect(startInput.value).toBe(committedDay);
+
+    fireEvent.click(screen.getByRole("button", { name: "common.confirm" }));
+    expect(
+      formatDay(new Date(onApply.mock.calls[0][0].customStartDate * 1000)),
+    ).toBe(committedDay);
+  });
+
+  it("discards an unfinished typed date when a calendar day is picked", () => {
+    openPicker();
+    const [startInput] =
+      document.querySelectorAll<HTMLInputElement>('input[type="date"]');
+    fireEvent.change(startInput, { target: { value: "0002-01-01" } });
+    expect(startInput.value).toBe("0002-01-01");
+
+    const todayButton = screen
+      .getAllByRole("button")
+      .find((btn) => btn.getAttribute("aria-current") === "date");
+    expect(todayButton).toBeDefined();
+    fireEvent.click(todayButton!);
+
+    expect(startInput.value).toBe(formatDay(new Date()));
   });
 });
