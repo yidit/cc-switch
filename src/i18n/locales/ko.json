@@ -2961,6 +2961,7 @@
     "retry": "업그레이드 재시도",
     "openReleases": "릴리스 페이지 열기",
     "openConfigDir": "설정 폴더 열기",
+    "manualUpgradeHint": "릴리스 페이지에서 새 버전을 다운로드하고 설치한 뒤 앱을 다시 열어 주세요.",
     "quit": "종료"
   },
   "errors": {

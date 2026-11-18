@@ -2961,6 +2961,7 @@
     "retry": "重試升級",
     "openReleases": "開啟發佈頁",
     "openConfigDir": "開啟設定目錄",
+    "manualUpgradeHint": "請前往發佈頁下載並安裝新版本，然後重新開啟應用程式。",
     "quit": "結束"
   },
   "errors": {

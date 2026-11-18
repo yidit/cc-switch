@@ -2961,6 +2961,7 @@
     "retry": "更新を再試行",
     "openReleases": "リリースページを開く",
     "openConfigDir": "設定フォルダを開く",
+    "manualUpgradeHint": "リリースページから新しいバージョンをダウンロードしてインストールし、アプリを再起動してください。",
     "quit": "終了"
   },
   "errors": {
