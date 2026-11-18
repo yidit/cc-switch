@@ -2839,6 +2839,7 @@
     "retry": "Yükseltmeyi yeniden dene",
     "openReleases": "Sürümler sayfasını aç",
     "openConfigDir": "Yapılandırma klasörünü aç",
+    "manualUpgradeHint": "Yeni sürümü sürümler sayfasından indirip kurun, ardından uygulamayı yeniden açın.",
     "quit": "Çık"
   },
   "errors": {

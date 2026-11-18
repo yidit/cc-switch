@@ -2908,6 +2908,7 @@
     "retry": "重试升级",
     "openReleases": "打开发布页",
     "openConfigDir": "打开配置目录",
+    "manualUpgradeHint": "请前往发布页下载并安装新版本，然后重新打开应用。",
     "quit": "退出"
   },
   "errors": {

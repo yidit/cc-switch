@@ -2908,6 +2908,7 @@
     "retry": "Aktualisierung wiederholen",
     "openReleases": "Releases-Seite öffnen",
     "openConfigDir": "Konfigurationsordner öffnen",
+    "manualUpgradeHint": "Laden Sie die neue Version von der Releases-Seite herunter, installieren Sie sie und öffnen Sie die App anschließend erneut.",
     "quit": "Beenden"
   },
   "errors": {

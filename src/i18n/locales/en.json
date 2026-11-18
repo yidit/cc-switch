@@ -2908,6 +2908,7 @@
     "retry": "Retry upgrade",
     "openReleases": "Open releases page",
     "openConfigDir": "Open config folder",
+    "manualUpgradeHint": "Download and install the new version from the releases page, then reopen the app.",
     "quit": "Quit"
   },
   "errors": {
