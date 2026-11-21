@@ -9,7 +9,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use tauri::AppHandle;
-use tauri_plugin_opener::OpenerExt;
 use tool_lifecycle_progress::ToolLifecycleProgress;
 
 #[path = "tool_discovery.rs"]
@@ -62,9 +61,7 @@ fn validate_external_url(raw: &str) -> Result<String, String> {
 pub async fn open_external(app: AppHandle, url: String) -> Result<bool, String> {
     let url = validate_external_url(&url)?;
 
-    app.opener()
-        .open_url(&url, None::<String>)
-        .map_err(|e| format!("打开链接失败: {e}"))?;
+    crate::host_open::open_url(&app, &url).map_err(|e| format!("打开链接失败: {e}"))?;
 
     Ok(true)
 }
