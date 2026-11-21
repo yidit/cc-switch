@@ -2306,8 +2306,14 @@ impl SkillService {
         }
 
         // 4. 刷新所有应用目录的 symlink（指向新 SSOT）
+        // 旧目录已经搬走：哪个应用没重链成功，它的 Skill 就指向不存在的路径，必须报出来。
         for app in AppType::all() {
-            let _ = Self::sync_to_app_unlocked(db, &app);
+            match Self::sync_to_app_unlocked(db, &app) {
+                Ok(failed) => result.errors.extend(failed.into_iter().map(|failure| {
+                    format!("{}/{}: {}", app.as_str(), failure.directory, failure.error)
+                })),
+                Err(err) => result.errors.push(format!("{}: {err}", app.as_str())),
+            }
         }
         for (directory, deployment) in pi_deployments {
             let source = new_dir.join(&directory);
@@ -4613,8 +4619,24 @@ impl SkillService {
         }
 
         let file = body.into_inner().map_err(|e| e.into_error())?;
-        let archive = zip::ZipArchive::new(file)?;
+        let archive = Self::open_downloaded_archive(file)?;
         Self::extract_repo_archive(archive, dest)
+    }
+
+    /// 打开下载到的归档。不兼容 GitHub / GitLab / Gitea 接口的站点（如 cnb.cool，#9812）
+    /// 对任何地址都回 200 的网页，拿到的不是 ZIP：报成结构化错误，让仓库显示「没有读到」
+    /// 和原因，而不是 zip 库的原文。
+    fn open_downloaded_archive<R: std::io::Read + std::io::Seek>(
+        reader: R,
+    ) -> Result<zip::ZipArchive<R>> {
+        zip::ZipArchive::new(reader).map_err(|e| {
+            log::warn!("下载到的内容不是 ZIP 归档: {e}");
+            anyhow::anyhow!(format_skill_error(
+                "ARCHIVE_INVALID",
+                &[],
+                Some("checkRepoUrl"),
+            ))
+        })
     }
 
     /// 下载停滞的结构化错误。owner / name 由分支回落那一层的 `with_repo_context` 补上。
@@ -6819,6 +6841,17 @@ mod tests {
             .expect("within budget");
         assert_eq!(writer.len(), 64);
         assert_eq!(total, 64);
+    }
+
+    #[test]
+    fn downloaded_html_page_is_reported_as_invalid_archive() {
+        let page = std::io::Cursor::new(b"<!DOCTYPE html><html><body>app</body></html>".to_vec());
+        let err = SkillService::open_downloaded_archive(page).unwrap_err();
+        let value: serde_json::Value = serde_json::from_str(&err.to_string()).unwrap();
+        assert_eq!(value["code"], "ARCHIVE_INVALID");
+        assert_eq!(value["suggestion"], "checkRepoUrl");
+        // 不是 404，不能触发换分支重试
+        assert!(!SkillService::is_branch_not_found(&err));
     }
 
     #[test]
@@ -9078,6 +9111,77 @@ mod tests {
         assert_eq!(
             pi_skill.canonicalize().expect("resolve Pi symlink"),
             new_source.canonicalize().expect("resolve new source")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn migrate_storage_reports_skills_an_app_could_not_relink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().expect("tempdir");
+        let _home = TestHomeGuard::set(temp.path());
+        let _location = StorageLocationGuard::set(&_home, SkillStorageLocation::CcSwitch);
+
+        let db = std::sync::Arc::new(Database::memory().expect("memory db"));
+        let mut skill = poisoned_skill("owner/repo:skill", "test-skill");
+        skill.apps.set_enabled_for(&AppType::Claude, true);
+        db.save_skill(&skill).expect("save skill");
+        write_skill(
+            &SkillService::get_ssot_dir().unwrap().join("test-skill"),
+            "managed",
+        );
+        SkillService::sync_to_app_dir("test-skill", &AppType::Claude).expect("enable skill");
+
+        // Claude 的 skills 目录只读：旧链接摘不掉，也建不了新链接。
+        let claude_dir = SkillService::get_app_skills_dir(&AppType::Claude).unwrap();
+        fs::set_permissions(&claude_dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = SkillService::migrate_storage(&db, SkillStorageLocation::Unified);
+        fs::set_permissions(&claude_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let result = result.expect("migration itself completes");
+
+        assert_eq!(result.migrated_count, 1);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.starts_with("claude/test-skill: ")),
+            "{:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn migrate_storage_reports_an_app_whose_skills_dir_cannot_be_read() {
+        let temp = tempdir().expect("tempdir");
+        let _home = TestHomeGuard::set(temp.path());
+        let _location = StorageLocationGuard::set(&_home, SkillStorageLocation::CcSwitch);
+
+        let db = std::sync::Arc::new(Database::memory().expect("memory db"));
+        let skill = poisoned_skill("owner/repo:skill", "test-skill");
+        db.save_skill(&skill).expect("save skill");
+        write_skill(
+            &SkillService::get_ssot_dir().unwrap().join("test-skill"),
+            "managed",
+        );
+        // Codex 的 skills 路径被一个普通文件占了，整应用的重链都做不了。
+        let codex_dir = SkillService::get_app_skills_dir(&AppType::Codex).unwrap();
+        fs::create_dir_all(codex_dir.parent().unwrap()).unwrap();
+        fs::write(&codex_dir, "not a directory").unwrap();
+
+        let result = SkillService::migrate_storage(&db, SkillStorageLocation::Unified)
+            .expect("migration itself completes");
+
+        assert_eq!(result.migrated_count, 1);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.starts_with("codex: ")),
+            "{:?}",
+            result.errors
         );
     }
 
