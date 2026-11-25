@@ -393,9 +393,10 @@ impl RequestForwarder {
     /// 本 fork 的脱敏统一在 handler 层做（见 `handlers::apply_request_redaction`），
     /// 这里不再像上游那样在 Copilot 合并后再过一遍隐私过滤。
     fn copilot_rewrite_tool_results(&self, body: Value) -> Value {
-        let mut body = super::copilot_optimizer::sanitize_orphan_tool_results(body);
+        let (mut body, _) =
+            super::copilot_optimizer::sanitize_orphan_tool_results_with_changes(body);
         if self.copilot_optimizer_config.tool_result_merging {
-            body = super::copilot_optimizer::merge_tool_results(body);
+            body = super::copilot_optimizer::merge_tool_results_with_changes(body).0;
         }
         body
     }

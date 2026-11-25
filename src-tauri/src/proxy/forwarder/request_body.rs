@@ -1,11 +1,15 @@
 //! Outbound request body rewrites that do not depend on forwarder state.
 
 use super::*;
+use crate::provider::LocalProxyRequestOverrides;
 
 /// Own the parsed request on its first attempt. Keep the already-read wire bytes
 /// for lazy reconstruction after an error instead of cloning the JSON tree on
 /// every successful request. Before forwarding, handlers only rewrite `model`
 /// (Stack resolution); remember that resolved value for retries as well.
+///
+/// 本 fork 的 handler 还会整体改写请求体（请求脱敏），此时传入的 `bytes` 必须是
+/// 改写后的序列化结果，否则重试 / 故障转移会把原文重发上游。
 pub struct ForwardBody {
     first: Option<Value>,
     bytes: Bytes,
