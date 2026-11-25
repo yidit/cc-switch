@@ -1,6 +1,7 @@
 //! Outbound header policy: auth checks, fingerprint stripping and local overrides.
 
 use super::*;
+use crate::provider::LocalProxyRequestOverrides;
 
 pub(super) fn codex_bearer_access_token(headers: &http::HeaderMap) -> Option<&str> {
     let authorization = headers
