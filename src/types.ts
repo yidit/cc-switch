@@ -467,6 +467,7 @@ export interface Settings {
   useAppWindowControls?: boolean;
   // 启用 Claude 插件联动（写入 ~/.claude/config.json 的 primaryApiKey）
   enableClaudePluginIntegration?: boolean;
+  copilotVscode?: { enabled: boolean; targets: string[] };
   // 跳过 Claude Code 初次安装确认（写入 ~/.claude.json 的 hasCompletedOnboarding）
   skipClaudeOnboarding?: boolean;
   // 是否开机自启
@@ -894,6 +895,7 @@ export interface McpServerSpec {
 export interface McpApps {
   mcode?: boolean;
   kimi?: boolean;
+  codebuddy?: boolean;
   dsh?: boolean;
   workbuddy?: boolean;
   agy?: boolean;

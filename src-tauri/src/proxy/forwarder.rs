@@ -52,7 +52,7 @@ use crate::proxy::providers::copilot_model_map::{
 use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::{
     app_config::AppType,
-    provider::{CodexCopilotApiFormat, LocalProxyRequestOverrides, Provider},
+    provider::{CodexCopilotApiFormat, Provider},
 };
 use bytes::Bytes;
 use copilot::*;
@@ -62,11 +62,11 @@ use futures::StreamExt;
 use headers::*;
 use http::Extensions;
 use opencode::*;
+pub use request_body::ForwardBody;
 use request_body::*;
 use response_check::*;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::borrow::Cow;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::RwLock;
@@ -178,6 +178,7 @@ pub struct RequestForwarder {
     app_handle: Option<tauri::AppHandle>,
     /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
     current_provider_id_at_start: String,
+    route_revision: Option<u64>,
     /// 代理会话 ID（用于 Gemini Native shadow replay）
     session_id: String,
     /// Session ID 是否由客户端提供；生成值不能作为上游缓存身份。
@@ -244,19 +245,20 @@ impl RequestForwarder {
     ///
     /// 受 `enabled && request_media_fallback` 管辖；不涉及 `request_media_heuristic`——
     /// 这里是上游"实测"错误后的纯恢复，不是预测，故启发式开关与它无关。
+    /// `provider_body = None` 只检查错误和开关，让调用方按需重建正文。
     fn media_retry_should_trigger(
         &self,
         adapter_name: &str,
         already_retried: bool,
-        provider_body: &Value,
+        provider_body: Option<&Value>,
         error: &ProxyError,
     ) -> bool {
         matches!(adapter_name, "Claude" | "Codex")
             && self.rectifier_config.enabled
             && self.rectifier_config.request_media_fallback
             && !already_retried
-            && super::media_sanitizer::contains_image_blocks(provider_body)
             && super::media_sanitizer::is_unsupported_image_error(error)
+            && provider_body.is_none_or(super::media_sanitizer::contains_image_blocks)
     }
 
     /// 反应式密文重试判定：原样转发的 Responses 上游拒绝了请求里别家签发的密文时，
@@ -267,13 +269,14 @@ impl RequestForwarder {
     /// Claude / Claude Desktop 转 Responses 时，上游的推理条目藏在 thinking 签名里回放
     /// （#9424），请求体是 Anthropic Messages，整流用 [`rectify_claude_responses_replay`]。
     /// 这条路径不看上游格式：只有 Responses 上游会签发推理信封，也只有它会用这些措辞拒绝。
+    /// `request = None` 做预判；命中后必须带实际正文再次确认。
     fn opaque_state_retry_rejection(
         &self,
         app_type: &AppType,
         provider: &Provider,
         codex_upstream_format: Option<CodexUpstreamFormat>,
         already_retried: bool,
-        request: &Value,
+        request: Option<&Value>,
         error: &ProxyError,
     ) -> Option<OpaqueStateRejection> {
         if already_retried {
@@ -301,14 +304,27 @@ impl RequestForwarder {
         request: &Value,
         error: &ProxyError,
     ) -> Option<Value> {
-        if !matches!(app_type, AppType::Codex)
-            || codex_upstream_format != Some(CodexUpstreamFormat::NativeResponses)
-            || super::providers::is_codex_official_provider(provider)
-            || !matches!(error, ProxyError::UpstreamError { status: 400, .. })
-        {
+        if !Self::compaction_tool_choice_retry_applicable(
+            app_type,
+            provider,
+            codex_upstream_format,
+            error,
+        ) {
             return None;
         }
         super::providers::codex_compaction::compaction_retry_without_tool_choice(request)
+    }
+
+    fn compaction_tool_choice_retry_applicable(
+        app_type: &AppType,
+        provider: &Provider,
+        codex_upstream_format: Option<CodexUpstreamFormat>,
+        error: &ProxyError,
+    ) -> bool {
+        matches!(app_type, AppType::Codex)
+            && codex_upstream_format == Some(CodexUpstreamFormat::NativeResponses)
+            && !super::providers::is_codex_official_provider(provider)
+            && matches!(error, ProxyError::UpstreamError { status: 400, .. })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -343,6 +359,7 @@ impl RequestForwarder {
             failover_manager,
             app_handle,
             current_provider_id_at_start,
+            route_revision: None,
             session_id,
             session_client_provided,
             rectifier_config,
@@ -360,7 +377,21 @@ impl RequestForwarder {
         }
     }
 
+    fn prepare_provider_body(&self, body: &mut Value, provider: &Provider) {
+        if self.optimizer_config.enabled && is_bedrock_provider(provider) {
+            if self.optimizer_config.thinking_optimizer {
+                super::thinking_optimizer::optimize(body, &self.optimizer_config);
+            }
+            if self.optimizer_config.cache_injection {
+                super::cache_injector::inject(body, &self.optimizer_config);
+            }
+        }
+    }
+
     /// Copilot 优化的第 2、3 步：清洗孤立 tool_result（降级成文本）、合并 tool_result 与文本。
+    ///
+    /// 本 fork 的脱敏统一在 handler 层做（见 `handlers::apply_request_redaction`），
+    /// 这里不再像上游那样在 Copilot 合并后再过一遍隐私过滤。
     fn copilot_rewrite_tool_results(&self, body: Value) -> Value {
         let mut body = super::copilot_optimizer::sanitize_orphan_tool_results(body);
         if self.copilot_optimizer_config.tool_result_merging {
@@ -397,6 +428,11 @@ impl RequestForwarder {
     /// 使用脱敏前基于原文算好的会话指纹。
     pub fn with_conversation_fingerprint(mut self, hint: Option<String>) -> Self {
         self.conversation_fingerprint_hint = hint;
+        self
+    }
+
+    pub(crate) fn route_revision(mut self, route_revision: u64) -> Self {
+        self.route_revision = Some(route_revision);
         self
     }
 
@@ -544,10 +580,15 @@ impl RequestForwarder {
 
         {
             let mut current_providers = self.current_providers.write().await;
-            current_providers.insert(
-                app_type.to_string(),
-                (provider.id.clone(), provider.name.clone()),
-            );
+            if self
+                .route_revision
+                .is_none_or(|revision| revision == self.router.route_revision(app_type))
+            {
+                current_providers.insert(
+                    app_type.to_string(),
+                    (provider.id.clone(), provider.name.clone()),
+                );
+            }
         }
 
         {
@@ -557,14 +598,18 @@ impl RequestForwarder {
             if self.current_provider_id_at_start.as_str() != provider.id.as_str() {
                 status.failover_count += 1;
 
-                let fm = self.failover_manager.clone();
-                let ah = self.app_handle.clone();
-                let pid = provider.id.clone();
-                let pname = provider.name.clone();
-                let at = app_type.to_string();
-                tokio::spawn(async move {
-                    let _ = fm.try_switch(ah.as_ref(), &at, &pid, &pname).await;
-                });
+                if let Some(revision) = self.route_revision.filter(|_| self.failover_chain) {
+                    let fm = self.failover_manager.clone();
+                    let ah = self.app_handle.clone();
+                    let pid = provider.id.clone();
+                    let pname = provider.name.clone();
+                    let at = app_type.to_string();
+                    tokio::spawn(async move {
+                        let _ = fm
+                            .try_switch(ah.as_ref(), &at, &pid, &pname, revision)
+                            .await;
+                    });
+                }
             }
             refresh_success_rate(&mut status);
         }
@@ -632,7 +677,7 @@ impl RequestForwarder {
         app_type: &AppType,
         method: http::Method,
         endpoint: &str,
-        body: &Value,
+        body: ForwardBody,
         headers: axum::http::HeaderMap,
         extensions: Extensions,
         providers: &[Provider],
@@ -674,13 +719,13 @@ impl RequestForwarder {
         app_type: &AppType,
         method: http::Method,
         endpoint: &str,
-        body: &Value,
+        mut body: ForwardBody,
         headers: axum::http::HeaderMap,
         extensions: Extensions,
         providers: &[Provider],
     ) -> Result<ForwardResult, ForwardError> {
         if matches!(app_type, AppType::Claude | AppType::ClaudeDesktop)
-            && super::classifier_guard::classifier_retry_loop(body)
+            && super::classifier_guard::classifier_retry_loop(body.initial())
         {
             let error = ProxyError::InvalidRequest(
                 super::classifier_guard::CLASSIFIER_LOOP_MESSAGE.to_string(),
@@ -764,20 +809,12 @@ impl RequestForwarder {
                 continue;
             }
 
-            // PRE-SEND 优化器：每个 provider 独立决定是否优化
-            // 只有优化器或错误整流要改写时才复制，避免每家额外复制整段会话历史。
-            let mut provider_body = Cow::Borrowed(body);
-            if self.optimizer_config.enabled && is_bedrock_provider(provider) {
-                if self.optimizer_config.thinking_optimizer {
-                    super::thinking_optimizer::optimize(
-                        provider_body.to_mut(),
-                        &self.optimizer_config,
-                    );
-                }
-                if self.optimizer_config.cache_injection {
-                    super::cache_injector::inject(provider_body.to_mut(), &self.optimizer_config);
-                }
-            }
+            let mut provider_body = body.next().map_err(|error| ForwardError {
+                error,
+                provider: Some(provider.clone()),
+                outbound_model: None,
+            })?;
+            self.prepare_provider_body(&mut provider_body, provider);
 
             attempted_providers += 1;
 
@@ -802,7 +839,7 @@ impl RequestForwarder {
             match self
                 .forward(
                     &attempt,
-                    &provider_body,
+                    provider_body,
                     &mut attempted_codex_upstream_format,
                 )
                 .await
@@ -819,6 +856,15 @@ impl RequestForwarder {
                         .await);
                 }
                 Err(mut e) => {
+                    // Reconstruct at most once, and only after an error-only rectifier
+                    // check matches. Ordinary failures replay on the next provider only.
+                    let mut provider_body = RetryBody::new(self, &body, provider);
+                    let replay_error = |error| ForwardError {
+                        error,
+                        provider: Some(provider.clone()),
+                        outbound_model: None,
+                    };
+
                     // 检测是否需要触发整流器（上游为 Anthropic Messages 的供应商）
                     let is_anthropic_provider = uses_anthropic_rectifiers(
                         matches!(app_type, AppType::Claude | AppType::ClaudeDesktop)
@@ -829,10 +875,12 @@ impl RequestForwarder {
                     if self.media_retry_should_trigger(
                         adapter.name(),
                         media_rectifier_retried,
-                        &provider_body,
+                        None,
                         &e,
+                    ) && super::media_sanitizer::contains_image_blocks(
+                        provider_body.get().map_err(replay_error)?,
                     ) {
-                        let mut media_body = provider_body.as_ref().clone();
+                        let mut media_body = provider_body.get().map_err(replay_error)?.clone();
                         let replaced_images =
                             super::media_sanitizer::replace_image_blocks_with_marker(
                                 &mut media_body,
@@ -855,7 +903,7 @@ impl RequestForwarder {
                             match self
                                 .forward(
                                     &attempt,
-                                    &media_body,
+                                    media_body,
                                     &mut media_retry_codex_upstream_format,
                                 )
                                 .await
@@ -899,20 +947,30 @@ impl RequestForwarder {
 
                     // 压缩回合被原生 Responses 第三方拒绝：有的上游不收 `tool_choice: "none"`
                     // （见 `compaction_retry_without_tool_choice`），去掉它对同一家重试一次。
-                    if let Some(retry_body) = self.compaction_tool_choice_retry_body(
+                    let compaction_body = if Self::compaction_tool_choice_retry_applicable(
                         app_type,
                         provider,
                         attempted_codex_upstream_format,
-                        &provider_body,
                         &e,
                     ) {
+                        self.compaction_tool_choice_retry_body(
+                            app_type,
+                            provider,
+                            attempted_codex_upstream_format,
+                            provider_body.get().map_err(replay_error)?,
+                            &e,
+                        )
+                    } else {
+                        None
+                    };
+                    if let Some(retry_body) = compaction_body {
                         log::info!(
                             "[{app_type_str}] [RECT-030] provider={} 拒绝了压缩请求，去掉 tool_choice 后重试一次",
                             provider.id
                         );
                         let mut retry_codex_upstream_format = None;
                         match self
-                            .forward(&attempt, &retry_body, &mut retry_codex_upstream_format)
+                            .forward(&attempt, retry_body, &mut retry_codex_upstream_format)
                             .await
                         {
                             Ok(forwarded) => {
@@ -937,18 +995,35 @@ impl RequestForwarder {
                         }
                     }
 
-                    if let Some(rejection) = self.opaque_state_retry_rejection(
-                        app_type,
-                        provider,
-                        attempted_codex_upstream_format,
-                        opaque_rectifier_retried,
-                        &provider_body,
-                        &e,
-                    ) {
+                    let opaque_rejection = if self
+                        .opaque_state_retry_rejection(
+                            app_type,
+                            provider,
+                            attempted_codex_upstream_format,
+                            opaque_rectifier_retried,
+                            None,
+                            &e,
+                        )
+                        .is_some()
+                    {
+                        self.opaque_state_retry_rejection(
+                            app_type,
+                            provider,
+                            attempted_codex_upstream_format,
+                            opaque_rectifier_retried,
+                            Some(provider_body.get().map_err(replay_error)?),
+                            &e,
+                        )
+                    } else {
+                        None
+                    };
+                    if let Some(rejection) = opaque_rejection {
                         // 这一轮是派给子 agent 的加密任务：整流不动它（见
                         // `opaque_state_rectifier`），去掉别家的状态后仍被拒，就是任务本身解不开。
-                        let agent_task = carries_encrypted_agent_task(&provider_body);
-                        let mut opaque_body = provider_body.as_ref().clone();
+                        let agent_task = carries_encrypted_agent_task(
+                            provider_body.get().map_err(replay_error)?,
+                        );
+                        let mut opaque_body = provider_body.get().map_err(replay_error)?.clone();
                         let rectified =
                             if matches!(app_type, AppType::Claude | AppType::ClaudeDesktop) {
                                 rectify_claude_responses_replay(&mut opaque_body, rejection)
@@ -979,7 +1054,8 @@ impl RequestForwarder {
                             match self
                                 .forward(
                                     &attempt,
-                                    &opaque_body,
+                                    // Retain this rare retry body for rejection classification.
+                                    opaque_body.clone(),
                                     &mut opaque_retry_codex_upstream_format,
                                 )
                                 .await
@@ -1009,7 +1085,7 @@ impl RequestForwarder {
                                                 provider,
                                                 opaque_retry_codex_upstream_format,
                                                 false,
-                                                &opaque_body,
+                                                Some(&opaque_body),
                                                 &retry_err,
                                             )
                                             .is_some()
@@ -1047,7 +1123,9 @@ impl RequestForwarder {
                             }
 
                             // 首次触发：整流请求体
-                            let rectified = rectify_anthropic_request(provider_body.to_mut());
+                            let rectified = rectify_anthropic_request(
+                                provider_body.get().map_err(replay_error)?,
+                            );
 
                             // 整流未生效：继续尝试 budget 整流路径，避免误判后短路
                             if !rectified.applied {
@@ -1072,7 +1150,7 @@ impl RequestForwarder {
                                 match self
                                     .forward(
                                         &attempt,
-                                        &provider_body,
+                                        std::mem::take(provider_body.get().map_err(replay_error)?),
                                         &mut signature_retry_codex_upstream_format,
                                     )
                                     .await
@@ -1136,9 +1214,11 @@ impl RequestForwarder {
                             }
 
                             let budget_rectified = if budget_hit {
-                                rectify_thinking_budget(provider_body.to_mut())
+                                rectify_thinking_budget(provider_body.get().map_err(replay_error)?)
                             } else {
-                                rectify_thinking_disabled(provider_body.to_mut())
+                                rectify_thinking_disabled(
+                                    provider_body.get().map_err(replay_error)?,
+                                )
                             };
                             if !budget_rectified.applied {
                                 log::warn!(
@@ -1162,7 +1242,7 @@ impl RequestForwarder {
                             match self
                                 .forward(
                                     &attempt,
-                                    &provider_body,
+                                    std::mem::take(provider_body.get().map_err(replay_error)?),
                                     &mut budget_retry_codex_upstream_format,
                                 )
                                 .await
@@ -1281,7 +1361,7 @@ impl RequestForwarder {
     async fn forward(
         &self,
         attempt: &Attempt<'_>,
-        body: &Value,
+        body: Value,
         codex_upstream_format_out: &mut Option<CodexUpstreamFormat>,
     ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
         let Attempt {
@@ -1383,22 +1463,25 @@ impl RequestForwarder {
             }
         }
 
+        let original_model = body.get("model").cloned();
+        let original_metadata = is_copilot.then(|| body.get("metadata").cloned()).flatten();
+
         // 应用模型映射（独立于格式转换）
         // Claude Desktop proxy 模式必须先把 Desktop 可见的 claude-* route
         // 映射成真实上游模型名，并且未知 route 要直接报错，不能使用默认模型兜底。
         // 聚合模型的请求已经解出了上游名，不再查映射表（查不到会报错，按档位回落会发错模型）。
         let mapped_body = if matches!(app_type, AppType::ClaudeDesktop) {
             if self.keeps_resolved_model() {
-                crate::claude_desktop_config::normalize_upstream_request(body.clone(), provider)
+                crate::claude_desktop_config::normalize_upstream_request(body, provider)
             } else {
-                crate::claude_desktop_config::map_proxy_request_model(body.clone(), provider)
+                crate::claude_desktop_config::map_proxy_request_model(body, provider)
                     .map_err(|e| ProxyError::InvalidRequest(e.to_string()))?
             }
         } else if self.keeps_resolved_model() {
-            body.clone()
+            body
         } else {
             let (mapped_body, _original_model, _mapped_model) =
-                super::model_mapper::apply_model_mapping(body.clone(), provider);
+                super::model_mapper::apply_model_mapping(body, provider);
             // Codex 行没有档位映射，客户端发的是路由那家的模型名：故障转移换到不认这个名字的
             // 那家时，换成它自己的模型。
             if self.maps_codex_failover_model(app_type, endpoint) {
@@ -1521,7 +1604,7 @@ impl RequestForwarder {
             //   2. metadata.session_id（直接字段）
             //   3. raw metadata.user_id（整串 fallback）
             //   4. x-session-id header
-            let metadata = body.get("metadata");
+            let metadata = original_metadata.as_ref();
             let session_id = metadata
                 .and_then(|m| m.get("user_id"))
                 .and_then(|v| v.as_str())
@@ -1883,7 +1966,7 @@ impl RequestForwarder {
                 ) {
                     super::providers::transform::make_default_adaptive_thinking_explicit(
                         &mut mapped_body,
-                        body.get("model").and_then(|m| m.as_str()),
+                        original_model.as_ref().and_then(|m| m.as_str()),
                     );
                 }
                 super::providers::transform_claude_request_for_api_format(
@@ -1942,6 +2025,16 @@ impl RequestForwarder {
             {
                 log::debug!(
                     "[Codex] Reordered assistant messages inside tool-call groups (provider={})",
+                    provider.id
+                );
+            }
+            if !codex_official_auth_passthrough
+                && super::providers::transform_codex_responses_reorder::normalize_tool_output_grouping(
+                    &mut request_body,
+                )
+            {
+                log::debug!(
+                    "[Codex] Regrouped tool outputs with their call batch for a native Responses upstream (provider={})",
                     provider.id
                 );
             }
@@ -2048,19 +2141,18 @@ impl RequestForwarder {
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
-        let mut filtered_body = prepare_upstream_request_body(request_body);
+        let mut filtered_body = request_body;
         if !is_copilot {
             if let Some(overrides) = provider
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.local_proxy_request_overrides.as_ref())
             {
-                if apply_local_proxy_body_overrides(&mut filtered_body, overrides) {
-                    filtered_body = prepare_upstream_request_body(filtered_body);
-                }
+                apply_local_proxy_body_overrides(&mut filtered_body, overrides);
             }
         }
         // 请求体到这里定稿；之后只读不改（日志哈希、序列化）
+        let filtered_body = prepare_upstream_request_body(filtered_body);
         // 出站 body 定稿后刷新真值（覆盖 Codex chat 上游模型覆写、转换层模型改写）
         if let Some(m) = filtered_body
             .get("model")

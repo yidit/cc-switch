@@ -65,6 +65,8 @@ pub struct VisibleApps {
     pub copilot: bool,
     #[serde(default = "default_true")]
     pub workbuddy: bool,
+    #[serde(default = "default_true")]
+    pub codebuddy: bool,
 }
 
 impl Default for VisibleApps {
@@ -86,6 +88,7 @@ impl Default for VisibleApps {
             omp: true,
             copilot: true,
             workbuddy: true,
+            codebuddy: true,
         }
     }
 }
@@ -110,6 +113,7 @@ impl VisibleApps {
             AppType::Omp => self.omp,
             AppType::Copilot => self.copilot,
             AppType::WorkBuddy => self.workbuddy,
+            AppType::Codebuddy => self.codebuddy,
         }
     }
 }
@@ -492,6 +496,9 @@ pub struct AppSettings {
     /// 是否启用 Claude 插件联动
     #[serde(default)]
     pub enable_claude_plugin_integration: bool,
+    /// Device-local destinations for the Copilot CLI to VS Code model projection.
+    #[serde(default)]
+    pub copilot_vscode: crate::copilot_vscode::SyncSettings,
     /// 是否跳过 Claude Code 初次安装确认
     #[serde(default)]
     pub skip_claude_onboarding: bool,
@@ -756,6 +763,7 @@ impl Default for AppSettings {
             minimize_to_tray_on_close: true,
             use_app_window_controls: false,
             enable_claude_plugin_integration: false,
+            copilot_vscode: Default::default(),
             skip_claude_onboarding: false,
             launch_on_startup: false,
             silent_startup: false,
@@ -1365,6 +1373,7 @@ pub fn get_override_dir(app: &AppType) -> Option<PathBuf> {
         | AppType::Kimi
         | AppType::Agy
         | AppType::Copilot
+        | AppType::Codebuddy
         | AppType::WorkBuddy => return None,
     };
     dir.as_deref().map(resolve_override_path)
@@ -1436,7 +1445,8 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         | AppType::Kimi
         | AppType::Dsh
         | AppType::Omp
-        | AppType::WorkBuddy => None,
+        | AppType::WorkBuddy
+        | AppType::Codebuddy => None,
     }
 }
 
@@ -1462,7 +1472,8 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         | AppType::Kimi
         | AppType::Dsh
         | AppType::Omp
-        | AppType::WorkBuddy => {}
+        | AppType::WorkBuddy
+        | AppType::Codebuddy => {}
     })
 }
 

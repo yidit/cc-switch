@@ -5,6 +5,91 @@ use crate::test_support::EnvVars;
 use rusqlite::Connection;
 use serial_test::serial;
 
+#[tokio::test]
+#[serial]
+async fn wal_import_and_restore_keep_pragmas_and_invalidate_cached_reads() {
+    use crate::app_config::AppType;
+    let home = TestHomeGuard::new();
+    let db_path = home.temp_dir.path().join(".cc-switch/cc-switch.db");
+    // Real databases may use a non-default page size. Backup into a WAL DB
+    // must align the disposable source first, otherwise SQLite returns READONLY.
+    Connection::open(&db_path)
+        .unwrap()
+        .execute_batch("PRAGMA page_size=8192; VACUUM;")
+        .unwrap();
+    let db = Database::init().unwrap();
+    let source = Database::memory().unwrap();
+    source
+        .set_setting(
+            "privacy_filter_config",
+            r#"{"enabled":true,"filterToolResults":true}"#,
+        )
+        .unwrap();
+    source
+        .set_pricing_model_source(&AppType::Claude, "request")
+        .await
+        .unwrap();
+    let snapshot = source.backup_database_file().unwrap().unwrap();
+    assert_eq!(db.get_setting("privacy_filter_config").unwrap(), None);
+    assert_eq!(
+        db.get_pricing_model_source(&AppType::Claude).await.unwrap(),
+        "response"
+    );
+    db.import_sql_string(&source.export_sql_string().unwrap())
+        .unwrap();
+    assert_eq!(
+        db.get_setting("privacy_filter_config").unwrap().as_deref(),
+        Some(r#"{"enabled":true,"filterToolResults":true}"#)
+    );
+    assert_eq!(
+        db.get_pricing_model_source(&AppType::Claude).await.unwrap(),
+        "request"
+    );
+    db.set_setting(
+        "privacy_filter_config",
+        r#"{"enabled":false,"filterToolResults":false}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        db.get_setting("privacy_filter_config").unwrap().as_deref(),
+        Some(r#"{"enabled":false,"filterToolResults":false}"#)
+    );
+    db.restore_from_backup(snapshot.file_name().unwrap().to_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        db.get_setting("privacy_filter_config").unwrap().as_deref(),
+        Some(r#"{"enabled":true,"filterToolResults":true}"#)
+    );
+    {
+        let conn = db.conn.lock().unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        for (pragma, expected) in [
+            ("synchronous", 1),
+            ("busy_timeout", 5000),
+            ("temp_store", 2),
+            ("cache_size", -16000),
+            ("page_size", 8192),
+        ] {
+            let value: i64 = conn
+                .query_row(&format!("PRAGMA {pragma}"), [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(value, expected, "{pragma}");
+        }
+    }
+    db.checkpoint_wal().unwrap();
+    let wal = db_path.with_extension("db-wal");
+    assert_eq!(std::fs::metadata(wal).unwrap().len(), 0);
+    // Reopening the checkpointed file sees restored data without its sidecar.
+    let reopened = Connection::open(&db_path).unwrap();
+    let mode: String = reopened
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+}
+
 #[test]
 #[serial]
 fn backups_recover_after_poisoned_file_operation() {
@@ -165,6 +250,131 @@ fn import_rejects_cross_file_statements_and_leaves_no_file_behind() -> Result<()
 
 #[test]
 #[serial]
+fn import_rejects_triggers_and_views_that_would_persist_in_main_db() -> Result<(), AppError> {
+    let _test_home = TestHomeGuard::new();
+    let baseline = Database::memory()?;
+    let base_export = baseline.export_sql_string()?;
+    let insert_point = base_export
+        .rfind("COMMIT;")
+        .expect("export should contain COMMIT");
+
+    let hostile_trigger = r#"
+CREATE TRIGGER hijack_future_provider
+AFTER INSERT ON providers
+BEGIN
+    UPDATE providers
+       SET settings_config = '{"env":{"ANTHROPIC_BASE_URL":"https://attacker.example"}}'
+     WHERE id = NEW.id AND app_type = NEW.app_type;
+END;
+"#;
+    let hostile_temp_trigger = r#"
+CREATE TEMP TRIGGER temp_hijack
+AFTER INSERT ON providers
+BEGIN
+    SELECT 1;
+END;
+"#;
+    let hostile_view = "CREATE VIEW spoofed_view AS SELECT * FROM providers;\n";
+
+    for (label, snippet) in [
+        ("trigger", hostile_trigger),
+        ("temp-trigger", hostile_temp_trigger),
+        ("view", hostile_view),
+    ] {
+        let mut malicious_sql = String::new();
+        malicious_sql.push_str(&base_export[..insert_point]);
+        malicious_sql.push_str(snippet);
+        malicious_sql.push_str(&base_export[insert_point..]);
+
+        let target = Database::memory()?;
+        let res = target.import_sql_string(&malicious_sql);
+        let err = res.expect_err(&format!(
+            "malicious SQL containing {label} must be rejected"
+        ));
+        assert!(
+            err.to_string().to_ascii_lowercase().contains("authoriz"),
+            "{label} must be blocked by import_authorizer, got: {err}"
+        );
+
+        // Confirm no trigger/view survived in main DB.
+        let conn = crate::database::lock_conn!(target.conn);
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger', 'view')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 0, "no trigger/view may persist in main DB");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn validate_imported_schema_rejects_triggers_and_views_defense_in_depth() -> Result<(), AppError> {
+    let db = Database::memory()?;
+    let conn = crate::database::lock_conn!(db.conn);
+    assert!(Database::validate_imported_schema(&conn).is_ok());
+
+    conn.execute_batch(
+        "CREATE TRIGGER persisted_evil AFTER INSERT ON providers BEGIN SELECT 1; END;",
+    )?;
+    assert!(
+        Database::validate_imported_schema(&conn).is_err(),
+        "schema validation must reject triggers"
+    );
+    conn.execute_batch("DROP TRIGGER persisted_evil;")?;
+
+    conn.execute_batch("CREATE VIEW persisted_view AS SELECT * FROM providers;")?;
+    assert!(
+        Database::validate_imported_schema(&conn).is_err(),
+        "schema validation must reject views"
+    );
+    Ok(())
+}
+
+#[test]
+fn read_sql_file_bounded_enforces_size_limit() -> Result<(), AppError> {
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(temp.path(), "SELECT 1;").unwrap();
+    assert!(super::read_sql_file_bounded(temp.path(), 9).is_ok());
+    assert!(super::read_sql_file_bounded(temp.path(), 8).is_err());
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn import_interrupts_infinite_recursive_cte_before_hanging() -> Result<(), AppError> {
+    let _test_home = TestHomeGuard::new();
+    let db = Database::memory()?;
+    let dos_sql = format!(
+        "{}\nWITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt) SELECT MAX(x) FROM cnt;\n",
+        super::CC_SWITCH_SQL_EXPORT_HEADER
+    );
+
+    let started = std::time::Instant::now();
+    let err = db
+        .import_sql_string_inner_with_options(
+            &dos_sql,
+            &[],
+            std::time::Duration::from_millis(150),
+            || Ok(()),
+        )
+        .expect_err("infinite recursive CTE must time out");
+    let elapsed = started.elapsed();
+
+    assert!(
+        err.to_string().contains("timed out") || err.to_string().contains("超时"),
+        "expected timeout error, got: {err}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "progress_handler interruption took too long: {elapsed:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn import_still_accepts_a_genuine_export() -> Result<(), AppError> {
     let _test_home = TestHomeGuard::new();
     // 白名单收得紧，必须有一条回归防线证明它没误伤自家导出格式——
@@ -190,6 +400,173 @@ fn import_still_accepts_a_genuine_export() -> Result<(), AppError> {
         |row| row.get(0),
     )?;
     assert_eq!(name, "Provider One");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn export_sql_sets_private_0600_permissions() -> Result<(), AppError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let test_home = TestHomeGuard::new();
+    let db = Database::memory()?;
+    let out_path = test_home.path().join("exported.sql");
+    db.export_sql(&out_path)?;
+
+    let mode = std::fs::metadata(&out_path)
+        .map_err(|e| AppError::io(&out_path, e))?
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "exported SQL contains credentials and must be 0600 on Unix, got {mode:o}"
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn backup_filename_validation_rejects_traversal_nul_and_colon_targets() -> Result<(), AppError> {
+    let _test_home = TestHomeGuard::new();
+    let db = Database::memory()?;
+
+    for bad in ["foo\0bar.db", ".db", "../evil.db", "a/b.db", "a\\b.db"] {
+        let restore_err = db
+            .restore_from_backup(bad)
+            .expect_err(&format!("restore_from_backup must reject '{bad}'"));
+        assert!(
+            restore_err.to_string().contains("Invalid backup filename"),
+            "restore_from_backup('{bad}') should fail validation, got: {restore_err}"
+        );
+        let delete_err =
+            Database::delete_backup(bad).expect_err(&format!("delete_backup must reject '{bad}'"));
+        assert!(
+            delete_err.to_string().contains("Invalid backup filename"),
+            "delete_backup('{bad}') should fail validation, got: {delete_err}"
+        );
+        let rename_old_err = Database::rename_backup(bad, "safe")
+            .expect_err(&format!("rename_backup must reject old filename '{bad}'"));
+        assert!(
+            rename_old_err
+                .to_string()
+                .contains("Invalid backup filename"),
+            "rename_backup('{bad}', 'safe') should fail validation, got: {rename_old_err}"
+        );
+        let rename_new_err = Database::rename_backup("valid.db", bad)
+            .expect_err(&format!("rename_backup must reject new name '{bad}'"));
+        assert!(
+            !rename_new_err.to_string().contains("not found"),
+            "rename_backup('valid.db', '{bad}') should fail validation before filesystem access, got: {rename_new_err}"
+        );
+    }
+
+    // Colons are always rejected in newly created rename target names (cross-platform),
+    // and rejected for existing filenames on Windows (drive-relative paths / NTFS ADS).
+    for colon_name in ["C:foo.db", "c:evil.db", "foo.db:stream.db"] {
+        let rename_new_err = Database::rename_backup("valid.db", colon_name).expect_err(&format!(
+            "rename_backup must reject colon in new name '{colon_name}'"
+        ));
+        assert!(
+            !rename_new_err.to_string().contains("not found"),
+            "rename_backup('valid.db', '{colon_name}') should fail validation before filesystem access, got: {rename_new_err}"
+        );
+
+        #[cfg(windows)]
+        {
+            let restore_err = db
+                .restore_from_backup(colon_name)
+                .expect_err(&format!("restore_from_backup must reject '{colon_name}'"));
+            assert!(
+                restore_err.to_string().contains("Invalid backup filename"),
+                "restore_from_backup('{colon_name}') should fail validation, got: {restore_err}"
+            );
+            let delete_err = Database::delete_backup(colon_name)
+                .expect_err(&format!("delete_backup must reject '{colon_name}'"));
+            assert!(
+                delete_err.to_string().contains("Invalid backup filename"),
+                "delete_backup('{colon_name}') should fail validation, got: {delete_err}"
+            );
+            let rename_old_err = Database::rename_backup(colon_name, "safe").expect_err(&format!(
+                "rename_backup must reject old filename '{colon_name}'"
+            ));
+            assert!(
+                rename_old_err
+                    .to_string()
+                    .contains("Invalid backup filename"),
+                "rename_backup('{colon_name}', 'safe') should fail validation, got: {rename_old_err}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn unix_colon_named_backup_supports_list_restore_rename_and_delete() -> Result<(), AppError> {
+    let _test_home = TestHomeGuard::new();
+    let backup_dir = crate::config::get_app_config_dir().join("backups");
+    std::fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
+
+    // Seed a valid backup snapshot containing a sentinel provider and save it under
+    // legacy colon-containing Unix filenames (e.g. timestamped manual renames).
+    let source = Database::memory()?;
+    {
+        let conn = crate::database::lock_conn!(source.conn);
+        conn.execute(
+            "INSERT INTO providers (id, app_type, name, settings_config, meta)
+             VALUES ('colon-sentinel', 'claude', 'Colon Backup Provider', '{}', '{}')",
+            [],
+        )?;
+    }
+    let seeded_path = source
+        .backup_database_file()?
+        .expect("seeded backup should be created");
+
+    let colon_backup = "上线前-14:30.db";
+    let colon_backup_path = backup_dir.join(colon_backup);
+    std::fs::copy(&seeded_path, &colon_backup_path)
+        .map_err(|e| AppError::io(&colon_backup_path, e))?;
+
+    let colon_delete_target = "上线前-15:45.db";
+    let colon_delete_path = backup_dir.join(colon_delete_target);
+    std::fs::copy(&seeded_path, &colon_delete_path)
+        .map_err(|e| AppError::io(&colon_delete_path, e))?;
+
+    // 1. list_backups includes colon-named Unix backups.
+    let listed = Database::list_backups()?;
+    assert!(
+        listed.iter().any(|entry| entry.filename == colon_backup),
+        "list_backups must include legacy colon-named backup '{colon_backup}'"
+    );
+
+    // 2. restore_from_backup succeeds on colon-named Unix backup.
+    let target = Database::memory()?;
+    target.restore_from_backup(colon_backup)?;
+    {
+        let conn = crate::database::lock_conn!(target.conn);
+        let name: String = conn.query_row(
+            "SELECT name FROM providers WHERE id = 'colon-sentinel' AND app_type = 'claude'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(name, "Colon Backup Provider");
+    }
+
+    // 3. rename_backup can rename a colon-named Unix backup to a clean name,
+    //    while still refusing colons in the new target name.
+    assert!(Database::rename_backup(colon_backup, "still:colon").is_err());
+    let renamed = Database::rename_backup(colon_backup, "before-release-1430")?;
+    assert_eq!(renamed, "before-release-1430.db");
+    assert!(!colon_backup_path.exists());
+    assert!(backup_dir.join(&renamed).exists());
+
+    // 4. delete_backup can delete a colon-named Unix backup.
+    Database::delete_backup(colon_delete_target)?;
+    assert!(!colon_delete_path.exists());
+
     Ok(())
 }
 
