@@ -10,11 +10,22 @@ use rusqlite::backup::{Backup, StepResult};
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 use tempfile::{Builder, NamedTempFile};
 
 const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
+
+/// SQL 导入允许的最大体积（与云同步产物上限保持一致，防止超大文件触发 OOM）。
+const MAX_SQL_IMPORT_BYTES: u64 = crate::services::sync_protocol::MAX_SYNC_ARTIFACT_BYTES;
+
+/// 外部 SQL 批量执行的超时上限，防止恶意 `WITH RECURSIVE` 等语句永久挂死并占住锁。
+const SQL_IMPORT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// SQLite progress_handler 回调间隔（每 N 条虚拟机指令检查一次截止时间）。
+const SQL_IMPORT_PROGRESS_OPCODES: i32 = 10_000;
 
 /// Bound combined INSERT batches while still amortizing statement parsing.
 /// A row larger than this cap is emitted alone because it cannot be split.
@@ -65,14 +76,24 @@ const IMPORT_ALLOWED_PRAGMAS: &[&str] = &["foreign_keys", "user_version"];
 /// - `ATTACH DATABASE 'x'`、`VACUUM INTO 'x'`、裸 `VACUUM` **三者都**报
 ///   `AuthAction::Attach`，所以拒 `Attach` 一条即可覆盖
 /// - 文件后端的虚拟表模块（`csvfile`、`zipfile` 等）能读写任意路径 → 拒 vtable
+/// - CC Switch 生产库 schema 不包含任何 trigger / view；放行 `CREATE TRIGGER` / `CREATE VIEW`
+///   会让恶意备份或云同步包在暂存库植入持久化触发器并被整库复制到主库，在用户后续写入供应商时静默篡改数据 → 拒 trigger / view
 /// - `Unknown` 是 rusqlite 对未识别动作码的兜底 → 未知即拒，将来 SQLite 新增的
 ///   跨文件语句会默认落进这里，不依赖有人记得回来补名单
 fn import_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
     use rusqlite::hooks::{AuthAction, Authorization};
 
-    let escapes_temp_db = match context.action {
+    let disallowed = match context.action {
         AuthAction::Attach { .. } | AuthAction::Detach { .. } => true,
         AuthAction::CreateVtable { .. } | AuthAction::DropVtable { .. } => true,
+        AuthAction::CreateTrigger { .. }
+        | AuthAction::CreateTempTrigger { .. }
+        | AuthAction::DropTrigger { .. }
+        | AuthAction::DropTempTrigger { .. }
+        | AuthAction::CreateView { .. }
+        | AuthAction::CreateTempView { .. }
+        | AuthAction::DropView { .. }
+        | AuthAction::DropTempView { .. } => true,
         AuthAction::Unknown { .. } => true,
         AuthAction::Pragma { pragma_name, .. } => !IMPORT_ALLOWED_PRAGMAS
             .iter()
@@ -80,13 +101,44 @@ fn import_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hoo
         _ => false,
     };
 
-    if escapes_temp_db {
+    if disallowed {
         // SQLite 只会回一句 "not authorized"，不记日志就无从知道是哪条语句被拦。
-        log::warn!("SQL 导入拒绝了越界语句: {:?}", context.action);
+        log::warn!("SQL 导入拒绝了不允许的语句: {:?}", context.action);
         Authorization::Deny
     } else {
         Authorization::Allow
     }
+}
+
+fn validate_sql_import_size(size_bytes: u64, max_bytes: u64) -> Result<(), AppError> {
+    if size_bytes > max_bytes {
+        let max_mb = max_bytes / 1024 / 1024;
+        return Err(AppError::localized(
+            "backup.sql.too_large",
+            format!("SQL 文件过大，超过 {max_mb} MB 上限"),
+            format!("SQL import exceeds the {max_mb} MB size limit"),
+        ));
+    }
+    Ok(())
+}
+
+fn read_sql_file_bounded(source_path: &Path, max_bytes: u64) -> Result<String, AppError> {
+    let metadata = fs::metadata(source_path).map_err(|e| AppError::io(source_path, e))?;
+    validate_sql_import_size(metadata.len(), max_bytes)?;
+
+    let file = fs::File::open(source_path).map_err(|e| AppError::io(source_path, e))?;
+    let mut buf = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut buf)
+        .map_err(|e| AppError::io(source_path, e))?;
+    validate_sql_import_size(buf.len() as u64, max_bytes)?;
+
+    String::from_utf8(buf).map_err(|e| {
+        AppError::InvalidInput(format!(
+            "SQL 文件不是有效的 UTF-8 编码 ({}): {e}",
+            source_path.display()
+        ))
+    })
 }
 
 /// Tables whose data rows are skipped when exporting for WebDAV sync.
@@ -121,6 +173,30 @@ pub struct BackupEntry {
 }
 
 impl Database {
+    fn replace_from_staging(
+        &self,
+        source: &Connection,
+        destination: &mut Connection,
+        context: &str,
+    ) -> Result<(), AppError> {
+        let page_size: i64 = destination.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        let source_page_size: i64 = source.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        if source_page_size != page_size {
+            // Rebuild the disposable staging DB, never disable WAL on the live DB.
+            source.execute_batch(&format!(
+                "PRAGMA journal_mode = DELETE; PRAGMA page_size = {page_size}; VACUUM;"
+            ))?;
+        }
+        let result = {
+            let backup =
+                Backup::new(source, destination).map_err(|e| AppError::Database(e.to_string()))?;
+            Self::complete_backup(&backup, context)
+        };
+        self.read_cache.invalidate_all();
+        result?;
+        Self::configure_connection(destination)
+    }
+
     /// 导出为 SQLite 兼容的 SQL 文本（内存字符串，完整导出）
     pub fn export_sql_string(&self) -> Result<String, AppError> {
         let snapshot = self.snapshot_to_memory()?;
@@ -141,7 +217,7 @@ impl Database {
             fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
         }
 
-        crate::config::atomic_write(target_path, dump.as_bytes())
+        crate::config::atomic_write_private(target_path, dump.as_bytes())
     }
 
     /// 从 SQL 文件导入，返回生成的备份 ID（若无备份则为空字符串）
@@ -153,7 +229,7 @@ impl Database {
             )));
         }
 
-        let sql_raw = fs::read_to_string(source_path).map_err(|e| AppError::io(source_path, e))?;
+        let sql_raw = read_sql_file_bounded(source_path, MAX_SQL_IMPORT_BYTES)?;
         let sql_content = sql_raw.trim_start_matches('\u{feff}');
         self.import_sql_string(sql_content)
     }
@@ -186,6 +262,25 @@ impl Database {
     where
         F: FnOnce() -> Result<(), AppError>,
     {
+        self.import_sql_string_inner_with_options(
+            sql_raw,
+            preserve_tables,
+            SQL_IMPORT_EXECUTION_TIMEOUT,
+            on_staging_ready,
+        )
+    }
+
+    fn import_sql_string_inner_with_options<F>(
+        &self,
+        sql_raw: &str,
+        preserve_tables: &[&str],
+        execution_timeout: Duration,
+        on_staging_ready: F,
+    ) -> Result<String, AppError>
+    where
+        F: FnOnce() -> Result<(), AppError>,
+    {
+        validate_sql_import_size(sql_raw.len() as u64, MAX_SQL_IMPORT_BYTES)?;
         let sql_content = sql_raw.trim_start_matches('\u{feff}');
         Self::validate_cc_switch_sql_export(sql_content)?;
 
@@ -204,15 +299,42 @@ impl Database {
             .execute("PRAGMA auto_vacuum = INCREMENTAL;", [])
             .map_err(|e| AppError::Database(format!("设置暂存库 auto_vacuum 失败: {e}")))?;
 
-        // authorizer 只覆盖外部 SQL，执行完立刻摘掉：紧随其后的
+        // authorizer 与 progress_handler 只覆盖外部 SQL，执行完立刻摘掉：紧随其后的
         // `create_tables_on_conn` / `apply_schema_migrations_on_conn` 是本程序自己的
         // schema 维护语句，不属于需要设防的输入，没必要让它们也过一遍守卫。
+        let deadline = Instant::now().checked_add(execution_timeout);
         temp_conn.authorizer(Some(import_authorizer));
+        if let Some(deadline) = deadline {
+            temp_conn.progress_handler(
+                SQL_IMPORT_PROGRESS_OPCODES,
+                Some(move || Instant::now() > deadline),
+            );
+        }
         let batch_result = temp_conn.execute_batch(sql_content);
+        temp_conn.progress_handler(0, None::<fn() -> bool>);
         temp_conn.authorizer(
             None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
         );
-        batch_result.map_err(|e| AppError::Database(format!("执行 SQL 导入失败: {e}")))?;
+        batch_result.map_err(|e| {
+            if matches!(
+                e,
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error {
+                        code: rusqlite::ErrorCode::OperationInterrupted,
+                        ..
+                    },
+                    _
+                )
+            ) {
+                AppError::localized(
+                    "backup.sql.execution_timeout",
+                    "SQL 导入执行超时，文件可能包含异常循环语句",
+                    "SQL import timed out; the file may contain an abusive query",
+                )
+            } else {
+                AppError::Database(format!("执行 SQL 导入失败: {e}"))
+            }
+        })?;
         if !temp_conn.is_autocommit() {
             let _ = temp_conn.execute_batch("ROLLBACK;");
             return Err(AppError::localized(
@@ -244,9 +366,7 @@ impl Database {
             if !preserve_tables.is_empty() {
                 Self::restore_tables(&main_conn, &temp_conn, preserve_tables)?;
             }
-            let backup = Backup::new(&temp_conn, &mut main_conn)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            Self::complete_backup(&backup, "替换主数据库")?;
+            self.replace_from_staging(&temp_conn, &mut main_conn, "替换主数据库")?;
             backup_path
         };
 
@@ -801,6 +921,22 @@ impl Database {
                 format!("The imported SQL is missing required CC Switch tables: {names}"),
             ));
         }
+
+        // 纵深防御：CC Switch 生产 schema 不含 trigger/view，即便 authorizer 被绕过也不允许落盘
+        let disallowed_objects: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger', 'view')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        if disallowed_objects > 0 {
+            return Err(AppError::localized(
+                "backup.sql.disallowed_schema_objects",
+                "导入的 SQL 包含不允许的触发器或视图对象",
+                "The imported SQL contains disallowed trigger or view objects",
+            ));
+        }
         Ok(())
     }
 
@@ -1104,6 +1240,30 @@ impl Database {
         self.restore_from_backup_with_hook(filename, |_| Ok(()))
     }
 
+    /// Validate that a backup filename is a single normal `.db` filename with no path
+    /// separators, traversal segments, NULs, or (on Windows) drive prefixes / NTFS stream colons.
+    fn validate_backup_filename(filename: &str) -> Result<(), AppError> {
+        let mut components = Path::new(filename).components();
+        let is_single_normal = matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(part)), None) if part == filename
+        );
+        if !is_single_normal
+            || filename.contains("..")
+            || filename.contains('/')
+            || filename.contains('\\')
+            || (cfg!(windows) && filename.contains(':'))
+            || filename.contains('\0')
+            || !filename.ends_with(".db")
+            || filename == ".db"
+        {
+            return Err(AppError::InvalidInput(
+                "Invalid backup filename".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     fn restore_from_backup_with_hook<F>(
         &self,
         filename: &str,
@@ -1112,16 +1272,8 @@ impl Database {
     where
         F: FnOnce(Option<&Path>) -> Result<(), AppError>,
     {
-        // Security: validate filename to prevent path traversal
-        if filename.contains("..")
-            || filename.contains('/')
-            || filename.contains('\\')
-            || !filename.ends_with(".db")
-        {
-            return Err(AppError::InvalidInput(
-                "Invalid backup filename".to_string(),
-            ));
-        }
+        // Security: validate filename to prevent path traversal and drive-relative paths
+        Self::validate_backup_filename(filename)?;
 
         let backup_file_guard = lock_backup_file_operations();
         let backup_dir = get_app_config_dir().join("backups");
@@ -1175,9 +1327,7 @@ impl Database {
                 &[backup_path.as_path()],
             )?;
             before_replace(safety_backup.as_deref())?;
-            let backup = Backup::new(&staging_conn, &mut main_conn)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            Self::complete_backup(&backup, "恢复主数据库")?;
+            self.replace_from_staging(&staging_conn, &mut main_conn, "恢复主数据库")?;
             safety_backup
         };
         let safety_id = safety_backup
@@ -1190,16 +1340,8 @@ impl Database {
 
     /// Rename a backup file. Returns the new filename.
     pub fn rename_backup(old_filename: &str, new_name: &str) -> Result<String, AppError> {
-        // Validate old filename (path traversal + .db suffix)
-        if old_filename.contains("..")
-            || old_filename.contains('/')
-            || old_filename.contains('\\')
-            || !old_filename.ends_with(".db")
-        {
-            return Err(AppError::InvalidInput(
-                "Invalid backup filename".to_string(),
-            ));
-        }
+        // Validate old filename (path traversal, drive prefix, + .db suffix)
+        Self::validate_backup_filename(old_filename)?;
 
         // Clean new name
         let trimmed = new_name.trim();
@@ -1211,16 +1353,22 @@ impl Database {
 
         // Length limit (without .db suffix)
         let name_part = trimmed.strip_suffix(".db").unwrap_or(trimmed);
+        if name_part.is_empty() {
+            return Err(AppError::InvalidInput(
+                "New name cannot be empty".to_string(),
+            ));
+        }
         if name_part.len() > 100 {
             return Err(AppError::InvalidInput(
                 "Name too long (max 100 characters)".to_string(),
             ));
         }
 
-        // Prevent path traversal in new name
+        // Prevent path traversal, drive-relative colons, and NUL bytes in new name
         if name_part.contains("..")
             || name_part.contains('/')
             || name_part.contains('\\')
+            || name_part.contains(':')
             || name_part.contains('\0')
         {
             return Err(AppError::InvalidInput(
@@ -1229,6 +1377,7 @@ impl Database {
         }
 
         let new_filename = format!("{name_part}.db");
+        Self::validate_backup_filename(&new_filename)?;
 
         let _backup_file_guard = lock_backup_file_operations();
         let backup_dir = get_app_config_dir().join("backups");
@@ -1254,16 +1403,8 @@ impl Database {
 
     /// Delete a backup file permanently.
     pub fn delete_backup(filename: &str) -> Result<(), AppError> {
-        // Validate filename (path traversal + .db suffix)
-        if filename.contains("..")
-            || filename.contains('/')
-            || filename.contains('\\')
-            || !filename.ends_with(".db")
-        {
-            return Err(AppError::InvalidInput(
-                "Invalid backup filename".to_string(),
-            ));
-        }
+        // Validate filename (path traversal, drive prefix, + .db suffix)
+        Self::validate_backup_filename(filename)?;
 
         let backup_file_guard = lock_backup_file_operations();
         let backup_path = get_app_config_dir().join("backups").join(filename);
